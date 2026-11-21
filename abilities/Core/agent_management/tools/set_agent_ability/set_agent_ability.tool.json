@@ -1,0 +1,42 @@
+{
+  "name": "set_agent_ability",
+  "description": "Set availability for one installed ability without granting new authority. Request: visibility and expected_revision.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ability_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "agent_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "request": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "agent_id",
+      "ability_id",
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "turn an ability on for an agent",
+      "switch off web access for this agent"
+    ],
+    "keywords": [
+      "ability on",
+      "ability off"
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "terminal_wait",
+  "description": "Wait for bounded PTY output",
+  "effect": "read",
+  "retention": {
+    "output": "log",
+    "tail_lines": 40
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "terminal_id": {
+        "type": "string"
+      },
+      "cursor": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30
+      }
+    },
+    "required": [
+      "terminal_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "wait for the command to finish",
+      "wait for terminal output"
+    ],
+    "keywords": [
+      "wait"
+    ]
+  }
+}

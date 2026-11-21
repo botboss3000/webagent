@@ -1,0 +1,57 @@
+{
+  "name": "source_rollback",
+  "description": "Restore the recorded previous Cloudflare version. Source history is preserved.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "site_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "connection_revision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "request_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "version_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "expected_deployment_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      }
+    },
+    "required": [
+      "site_id",
+      "connection_revision",
+      "request_id",
+      "version_id",
+      "expected_deployment_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "roll back the website",
+      "restore the previous site version"
+    ],
+    "keywords": [
+      "rollback",
+      "restore site"
+    ]
+  }
+}

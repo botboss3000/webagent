@@ -1,0 +1,234 @@
+//! Scoped SQLite authorities: one WAL pool per application, user and agent
+//! database, with profile permissions and the plane schema their owners need.
+use crate::cache::{Cache, ContextCache};
+use anyhow::{anyhow, Result};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+    Row, SqlitePool,
+};
+use std::{
+    collections::HashMap,
+    path::Path,
+    str::FromStr,
+    sync::{atomic::AtomicBool, Arc, Mutex},
+};
+use tokio::sync::RwLock;
+use webagent_platform::fs::PermissionsExt;
+
+/// Open a durable WAL authority with bounded connections, profile permissions and the tables its owner needs.
+/// `events` adds the event log (user and application planes); `runs` adds the user-plane run schema.
+/// Notification staging tables are added by their owner after this returns.
+pub async fn open_pool(path: &Path, events: bool, runs: bool) -> Result<SqlitePool> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Database path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    // Checkout data remains editable by the administrator worker. Only other
+    // user/agent profiles keep private modes; fixed admin profiles are exceptions.
+    let family = parent.parent().and_then(Path::file_name);
+    let profile = parent.file_name();
+    let private_profile = (family == Some(std::ffi::OsStr::new("user_data"))
+        && profile != Some(std::ffi::OsStr::new("admin")))
+        || (family == Some(std::ffi::OsStr::new("agent_data"))
+            && profile != Some(std::ffi::OsStr::new("shared_default")));
+    std::fs::set_permissions(
+        parent,
+        std::fs::Permissions::from_mode(if private_profile { 0o700 } else { 0o770 }),
+    )?;
+    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Full)
+        .busy_timeout(std::time::Duration::from_secs(5));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        // IDLE-POOL-BOUND: release idle connections without closing pools that
+        // active Store clones still use. Each connection holds an OS thread, so idle
+        // ones go quickly; reconnection remains transparent.
+        .min_connections(0)
+        .idle_timeout(std::time::Duration::from_secs(5))
+        .max_connections(4)
+        .connect_with(options)
+        .await?;
+    std::fs::set_permissions(
+        path,
+        std::fs::Permissions::from_mode(if private_profile { 0o600 } else { 0o660 }),
+    )?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS docs (key TEXT PRIMARY KEY, value BLOB NOT NULL)")
+        .execute(&pool)
+        .await?;
+    if events {
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL);
+            CREATE INDEX IF NOT EXISTS events_session ON events(session_id,seq);
+            CREATE TABLE IF NOT EXISTS legacy_event_map(legacy_seq INTEGER PRIMARY KEY,new_seq INTEGER NOT NULL UNIQUE);")
+            .execute(&pool).await?;
+        let event_columns = sqlx::query("PRAGMA table_info(events)")
+            .fetch_all(&pool)
+            .await?;
+        if !event_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "run_id")
+        {
+            sqlx::query("ALTER TABLE events ADD COLUMN run_id TEXT")
+                .execute(&pool)
+                .await?;
+        }
+        // Each progress update is a full run snapshot, so a new one replaces the older ones.
+        sqlx::raw_sql(
+            "CREATE INDEX IF NOT EXISTS events_run ON events(run_id,seq) WHERE run_id IS NOT NULL;
+            CREATE TRIGGER IF NOT EXISTS events_newest_run_status AFTER INSERT ON events
+            WHEN NEW.kind='run_status' AND NEW.run_id IS NOT NULL BEGIN
+            DELETE FROM events WHERE run_id=NEW.run_id AND kind='run_status' AND seq<NEW.seq; END;",
+        )
+        .execute(&pool)
+        .await?;
+    }
+    if events && !runs {
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS loop_heartbeat(
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),owner TEXT NOT NULL,
+            protocol_version INTEGER NOT NULL CHECK(protocol_version=1),updated_at INTEGER NOT NULL)")
+            .execute(&pool).await?;
+    }
+    if runs {
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS action_lock(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision INTEGER NOT NULL); INSERT OR IGNORE INTO action_lock VALUES(1,0); CREATE TABLE IF NOT EXISTS action_index(id TEXT PRIMARY KEY,resource TEXT NOT NULL,intent_key TEXT NOT NULL,state TEXT NOT NULL); CREATE INDEX IF NOT EXISTS action_intent ON action_index(resource,intent_key);").execute(&pool).await?;
+        sqlx::raw_sql("CREATE TABLE IF NOT EXISTS run_index(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,status TEXT NOT NULL,updated_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS runs_status ON run_index(status,updated_at);
+            CREATE INDEX IF NOT EXISTS runs_session ON run_index(session_id,updated_at);
+            CREATE TABLE IF NOT EXISTS interactions(seq INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL,run_id TEXT NOT NULL,step TEXT NOT NULL,item BLOB NOT NULL,created_at INTEGER NOT NULL,UNIQUE(run_id,step));
+            CREATE INDEX IF NOT EXISTS interactions_session ON interactions(session_id,seq);
+            CREATE TABLE IF NOT EXISTS activity_boundaries(interaction_seq INTEGER PRIMARY KEY,boundary_item_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS chat_context_boundaries(message_id TEXT PRIMARY KEY,through_seq INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS activity_boundary_item ON activity_boundaries(boundary_item_id);
+            CREATE TABLE IF NOT EXISTS chat(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,session_id TEXT NOT NULL,run_id TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('user','assistant','notice')),content BLOB NOT NULL,created_at INTEGER NOT NULL,terminal_run_id TEXT UNIQUE);
+            CREATE INDEX IF NOT EXISTS chat_session ON chat(session_id,seq);
+            CREATE TABLE IF NOT EXISTS loop_commands(seq INTEGER PRIMARY KEY AUTOINCREMENT,command_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version=1),kind TEXT NOT NULL,payload BLOB NOT NULL,created_at INTEGER NOT NULL,acknowledged_at INTEGER);
+            CREATE INDEX IF NOT EXISTS loop_commands_run ON loop_commands(run_id,seq);
+            CREATE TABLE IF NOT EXISTS loop_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,schema_version INTEGER NOT NULL CHECK(schema_version=1),kind TEXT NOT NULL,payload BLOB NOT NULL,created_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS loop_events_run ON loop_events(run_id,seq);
+            CREATE TRIGGER IF NOT EXISTS loop_events_newest_run_status AFTER INSERT ON loop_events
+            WHEN NEW.kind='run_status' BEGIN
+            DELETE FROM loop_events WHERE run_id=NEW.run_id AND kind='run_status' AND seq<NEW.seq; END;
+            CREATE TABLE IF NOT EXISTS publication_outbox(run_id TEXT PRIMARY KEY,schema_version INTEGER NOT NULL CHECK(schema_version=1),payload BLOB NOT NULL,created_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS session_artifacts(session_id TEXT NOT NULL,artifact_id TEXT NOT NULL,kind TEXT NOT NULL,revision INTEGER NOT NULL,run_id TEXT NOT NULL,bytes INTEGER NOT NULL,body BLOB NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(session_id,artifact_id));")
+            .execute(&pool).await?;
+        // Recovery input is encrypted item-by-item, separate from small run
+        // metadata. Both are committed atomically; interactions remain untouched.
+        sqlx::query("CREATE TABLE IF NOT EXISTS recovery_input(run_id TEXT NOT NULL,ordinal INTEGER NOT NULL,item BLOB NOT NULL,PRIMARY KEY(run_id,ordinal))")
+            .execute(&pool).await?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS reasoning_cleanup(segment_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,payload BLOB NOT NULL)")
+            .execute(&pool).await?;
+        // Per-account app notifications (storage warnings, automatic cleanups).
+        sqlx::query("CREATE TABLE IF NOT EXISTS user_notices(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,severity TEXT NOT NULL,body BLOB NOT NULL,created_at INTEGER NOT NULL,read_at INTEGER)")
+            .execute(&pool).await?;
+        // Which dictionary and row each idle session was last repacked with.
+        sqlx::query("CREATE TABLE IF NOT EXISTS compress_marks(session_id TEXT PRIMARY KEY,dictionary TEXT NOT NULL,through INTEGER NOT NULL)")
+            .execute(&pool).await?;
+        // How far each session's tool calls are trimmed to their tools' retention.
+        sqlx::query("CREATE TABLE IF NOT EXISTS retention_marks(session_id TEXT PRIMARY KEY,through INTEGER NOT NULL)")
+            .execute(&pool).await?;
+        let interaction_columns = sqlx::query("PRAGMA table_info(interactions)")
+            .fetch_all(&pool)
+            .await?;
+        if !interaction_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "execution_metadata")
+        {
+            sqlx::query("ALTER TABLE interactions ADD COLUMN execution_metadata BLOB")
+                .execute(&pool)
+                .await?;
+        }
+        let columns = sqlx::query("PRAGMA table_info(run_index)")
+            .fetch_all(&pool)
+            .await?;
+        if !columns
+            .iter()
+            .any(|r| r.get::<String, _>("name") == "enqueue_seq")
+        {
+            sqlx::query("ALTER TABLE run_index ADD COLUMN enqueue_seq INTEGER")
+                .execute(&pool)
+                .await?;
+        }
+        sqlx::query("UPDATE run_index SET enqueue_seq=rowid WHERE enqueue_seq IS NULL")
+            .execute(&pool)
+            .await?;
+        widen_chat_roles(&pool).await?;
+        for (name, declaration) in [
+            ("lease_epoch", "INTEGER NOT NULL DEFAULT 0"),
+            ("lease_owner", "TEXT"),
+            ("lease_expires_at", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !columns.iter().any(|r| r.get::<String, _>("name") == name) {
+                sqlx::query(&format!(
+                    "ALTER TABLE run_index ADD COLUMN {name} {declaration}"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+    }
+    Ok(pool)
+}
+
+/// Rebuilds a chat table created before run-status `notice` rows existed.
+/// SQLite cannot change a CHECK constraint in place, so the rows move to a
+/// copy with the same columns, ids and seq values, and the AUTOINCREMENT
+/// counter keeps its high-water mark so seq values are never reused.
+async fn widen_chat_roles(pool: &SqlitePool) -> Result<()> {
+    let sql: Option<String> =
+        sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='table' AND name='chat'")
+            .fetch_optional(pool)
+            .await?;
+    if sql.is_none_or(|sql| sql.contains("'notice'")) {
+        return Ok(());
+    }
+    // One script on one connection; the temp table carries the counter across the drop.
+    sqlx::raw_sql("BEGIN IMMEDIATE;
+        CREATE TEMP TABLE chat_counter AS SELECT seq FROM sqlite_sequence WHERE name='chat';
+        CREATE TABLE chat_rebuild(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,session_id TEXT NOT NULL,run_id TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('user','assistant','notice')),content BLOB NOT NULL,created_at INTEGER NOT NULL,terminal_run_id TEXT UNIQUE);
+        INSERT INTO chat_rebuild(seq,id,session_id,run_id,role,content,created_at,terminal_run_id) SELECT seq,id,session_id,run_id,role,content,created_at,terminal_run_id FROM chat;
+        DROP TABLE chat;
+        ALTER TABLE chat_rebuild RENAME TO chat;
+        CREATE INDEX IF NOT EXISTS chat_session ON chat(session_id,seq);
+        INSERT INTO sqlite_sequence(name,seq) SELECT 'chat',0 WHERE EXISTS(SELECT 1 FROM temp.chat_counter) AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='chat');
+        UPDATE sqlite_sequence SET seq=MAX(seq,(SELECT seq FROM temp.chat_counter)) WHERE name='chat' AND EXISTS(SELECT 1 FROM temp.chat_counter);
+        DROP TABLE temp.chat_counter;
+        COMMIT;")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// One account database with its disposable caches and context invalidation
+/// gate, shared by every Store clone bound to that account.
+#[derive(Clone)]
+pub struct UserPlane {
+    pub pool: SqlitePool,
+    pub cache: Arc<Mutex<Cache>>,
+    pub context_cache: Arc<Mutex<ContextCache>>,
+    pub context_gate: Arc<RwLock<()>>,
+    /// Set once this process has verified the account's one-time migration markers.
+    pub migrated: Arc<AtomicBool>,
+}
+
+impl UserPlane {
+    /// Keep one user pool and its cache invalidation gate shared across Store clones.
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            cache: Arc::new(Mutex::new(Cache::new(64 * 1024 * 1024))),
+            context_cache: Arc::new(Mutex::new(ContextCache::new(16 * 1024 * 1024))),
+            context_gate: Arc::new(RwLock::new(())),
+            migrated: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// INACTIVE-USER-HANDLES: keep at most 64 idle registry entries. The gate's
+/// sole owner is the registry only when no Store clone can still use this
+/// user. Never evict active gates or close their pools; that would split
+/// context invalidation synchronization.
+pub fn retain_active_users(states: &mut HashMap<String, UserPlane>) {
+    if states.len() >= 64 {
+        states.retain(|id, state| id == "admin" || Arc::strong_count(&state.context_gate) > 1);
+    }
+}

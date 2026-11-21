@@ -1,0 +1,31 @@
+<section class="session-metrics-page" aria-labelledby="session-metrics-title">
+  <header class="session-metrics-header">
+    <h1 id="session-metrics-title">Session Metrics</h1>
+    <p>One measured run is shown (Trial 5, 2026-10-08) with totals and a per-process turn breakdown from its run interaction log. No live session data source is connected yet.</p>
+  </header>
+  <div class="session-metrics-table-wrap" role="region" aria-label="Session run metrics" tabindex="0">
+    <table>
+      <thead><tr>
+        <th>Record ID</th><th>Task</th><th>Step</th><th>Session ID</th><th>Run ID</th><th>Parent Run ID</th><th>Agent</th><th>Model</th><th>Status</th><th>Submitted</th><th>Started</th><th>Finished</th><th>Wall Duration</th><th>Processes</th><th>Total Turns</th><th>Total Messages</th><th>Tool Calls</th><th>Failed Calls</th><th>Retry Calls</th><th>App Steps</th><th>Input Tokens</th><th>Output Tokens</th><th>Cached Tokens</th><th>Cost</th><th>Build</th><th>Tests</th><th>UI Check</th><th>Verified Outcome</th><th>Evidence</th><th>Optimization Notes</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <section class="session-metrics-defs" aria-labelledby="session-metrics-defs-title">
+    <h2 id="session-metrics-defs-title">Metric definitions</h2>
+    <dl>
+      <dt>Total Turns</dt>
+      <dd>Model calls in the run (run record / usage reported calls). One turn can emit several tool calls in parallel, so tool calls can exceed turns.</dd>
+      <dt>Total Tool Calls</dt>
+      <dd>tool_call events in the run interaction log; each has exactly one tool_result. Failed Calls counts results in error; Retry Calls counts repeated calls made for the same step.</dd>
+      <dt>Total Messages</dt>
+      <dd>All interaction-log events for the run: tool calls + tool results + reasoning (diagnostic) entries + step ends. Visible chat messages are separate (Trial 5: 3).</dd>
+      <dt>Processes</dt>
+      <dd>The run segmented into work processes, with the turns spent in each. Setup &amp; begin: load abilities and begin the isolated build task. Discover files: directory listings to locate the right files. Understand code: file reads to learn the existing patterns. Prepare patch: compose the change. Apply patch: submit it for validation and apply. Publish: progress messages to the session. Build / release: build status and finish, including validation and the UI release switch. Close &amp; report: final status and the summary message.</dd>
+      <dt>App Steps</dt>
+      <dd>Completed agent step boundaries (agent_step_end events) in the interaction log.</dd>
+      <dt>Data source</dt>
+      <dd>Run interaction log API: GET /api/v3/sessions/{session_id}/runs/{run_id}/logs (paged, 100 events per page). Cost is shown only when the provider reports it.</dd>
+    </dl>
+  </section>
+</section>

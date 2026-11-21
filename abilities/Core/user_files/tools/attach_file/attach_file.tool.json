@@ -1,0 +1,33 @@
+{
+  "name": "attach_file",
+  "description": "Attach a private saved file to the current conversation and return its authenticated download URL.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "maxLength": 255,
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "attach my saved file to the chat",
+      "share a file link"
+    ],
+    "keywords": [
+      "attach",
+      "download link"
+    ]
+  }
+}

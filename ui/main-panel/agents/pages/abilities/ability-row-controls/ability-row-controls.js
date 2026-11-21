@@ -1,0 +1,745 @@
+'use strict';
+// SISTER-PANEL: AGENT-ABILITY-TABLE. Actual v2 dom-utils row/menu builders.
+// Keep these copies synchronized with ui/shared/js/dom-utils.js; v3 saves are supplied as callbacks.
+// Credential and tool-editor workflows remain unported; callers do not enable their options.
+import { _markSaving, _flashSaveCheck } from '../../../../../shared/models/dom-utils.js';
+import {requestTouchVibration} from '../../../../../shared/vibrate/vibrate.js';
+import {pushBackHandler} from '../../../../../shared/history-back/history-back.js';
+const _noop = () => {};
+function _moreDotsSvg() {
+  return '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+}
+
+export function _buildMoreButton(items, opts = {}) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ac-row-more';
+  const title = opts.title || 'More options';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML = _moreDotsSvg();
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (btn.disabled) return;
+    const owner = btn._floatingMenuOwner || btn;
+    if (document.getElementById('files-floating-menu')?._owner === owner) { closeFloatingMenu(); return; }
+    const list = typeof items === 'function' ? items() : items;
+    if (!list || !list.length) return;
+    const point = btn._floatingMenuAnchorPoint;
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      // A hidden proxy button can forward its caller's pointer position so the
+      // body-level menu still opens beside the control the user clicked.
+      btn._floatingMenuAnchorPoint = null;
+      openFloatingMenu(list, point.y + 8, point.x + 8, owner);
+      return;
+    }
+    const r = btn.getBoundingClientRect();
+    // Anchor the menu's right edge at the button's right edge (menu width 180).
+    openFloatingMenu(list, r.bottom + 4, r.right - 180, owner);
+  });
+  return btn;
+}
+
+function _buildPermissionTri(cfg) {
+  const { value = 'allow', canEdit = true } = cfg || {};
+  const ORDER = ['deny', 'require_approval', 'allow'];
+  // Map the permission mode onto the group tri's off/mixed/on detents so the
+  // knob position + colour are shared 1:1: deny→off (left, grey), ask→mixed
+  // (middle, amber), auto→on (right, accent on a filled track).
+  const _toState = m => (m === 'allow' ? 'on' : (m === 'require_approval' ? 'mixed' : 'off'));
+
+  const tri = document.createElement('span');
+  tri.className = 'ac-tri ac-tri-perm';
+  tri.innerHTML = '<span class="ac-tri-knob"></span>';
+  let current = ORDER.includes(value) ? value : 'allow';
+  const _titleFor = m =>
+    'Deny · Require approval · Allow — '
+    + (m === 'deny' ? 'Deny: the agent never sees this tool'
+      : m === 'require_approval' ? 'Require approval before each use'
+      : 'Allow: runs without approval');
+  const paint = () => {
+    tri.dataset.state = _toState(current);
+    tri.title = _titleFor(current);
+    tri.setAttribute('aria-valuetext', current);
+  };
+  paint();
+
+  tri._mode = () => current;
+  // Repaint from a new mode WITHOUT saving — a display-only caller (the tool row)
+  // drives this from the tool's own state, never from clicks on the tri.
+  tri._paint = (m) => { current = ORDER.includes(m) ? m : 'allow'; paint(); };
+
+  // The tri only draws the three detents (Deny · Ask · Auto): the tool's choice is made
+  // in the panel it opens, and the row repaints it from the live permission via _paint().
+  tri.classList.add('ac-tri-readonly');
+  tri.setAttribute('role', 'button');
+  tri.setAttribute('aria-haspopup', 'menu');
+  tri.removeAttribute('aria-valuetext');
+  tri.setAttribute('tabindex', canEdit ? '0' : '-1');
+  return tri;
+}
+
+function _refreshLucideIcons(host) {
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try {
+      const scope = host || document;
+      const nodes = Array.from(scope.querySelectorAll('[data-lucide]:not(.lucide)'));
+      if (!nodes.length) return;
+      window.lucide.createIcons({ nodes });
+      // The vendored lucide copies data-lucide onto the svgs it renders (and
+      // renders them document-wide regardless of `nodes`). Remove the marker so
+      // those svgs never match a future [data-lucide] scan again.
+      scope.querySelectorAll('svg[data-lucide].lucide').forEach(function (svg) {
+        svg.removeAttribute('data-lucide');
+      });
+    } catch (_) {}
+  }
+}
+
+export function buildConfigRow(opts = {}) {
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row ac-config-row' + (opts.className ? (' ' + opts.className) : '');
+  if (opts.name != null || opts.desc) {
+    const label = document.createElement('span');
+    label.className = 'ac-ability-label';
+    if (opts.name != null) {
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ac-ability-name' + (opts.nameClass ? (' ' + opts.nameClass) : '');
+      nameEl.textContent = String(opts.name);
+      nameEl.title = String(opts.name);
+      label.appendChild(nameEl);
+    }
+    if (opts.desc) {
+      const descEl = document.createElement('span');
+      descEl.className = 'ac-ability-desc';
+      descEl.textContent = String(opts.desc);
+      // Clamped to one line by default, so keep the full text reachable on hover
+      // (the same treatment `_buildToolRow` gives a tool description).
+      if (opts.descTitle) descEl.title = opts.descTitle;
+      label.appendChild(descEl);
+    }
+    row.appendChild(label);
+  }
+  const ctrl = document.createElement('span');
+  ctrl.className = 'ac-config-control';
+  if (opts.control) ctrl.appendChild(opts.control);
+  row.appendChild(ctrl);
+  return row;
+}
+
+export function _buildToolRow(toolMeta, opts) {
+  const { canEdit = false, showPerm = false } = opts || {};
+  const onPermissionChange = (opts && opts.onPermissionChange) || _noop;
+  const onVisibilityChange = (opts && opts.onVisibilityChange) || (async () => {});
+
+  const row = document.createElement('div');
+  row.className = 'ac-ability-row ac-tool-row';
+
+  // Name (+ description) — promoted to flex children of the row by the shared
+  // `.ac-ability-label` (display:contents), so the name sits on the title line
+  // and the description drops to its own full-width line below it.
+  const label = document.createElement('span');
+  label.className = 'ac-ability-label';
+  // A skill editor is available only when this exact tool has a current Markdown
+  // association. The App caller also uses the same association for its purely
+  // informational missing-skill chip; per-agent callers leave it disabled.
+  const hasToolSkill = opts && opts.hasToolSkill === true;
+  const canOpenSkill = !!(opts && opts.abilityId && hasToolSkill && typeof opts.onOpenToolSkill === 'function');
+  const nameEl = document.createElement(canOpenSkill ? 'button' : 'span');
+  nameEl.className = 'ac-ability-name ac-tool-name' + (canOpenSkill ? ' ac-tool-skill-link' : '');
+  // Only the per-agent V3 catalog supplies callCount. Other shared row callers
+  // retain their existing labels.
+  const count = Number.isSafeInteger(toolMeta.callCount) && toolMeta.callCount >= 0
+    ? ` (${toolMeta.callCount})` : '';
+  nameEl.textContent = toolMeta.name + count;
+  nameEl.title = count
+    ? `${toolMeta.name}: ${toolMeta.callCount} recorded calls in your sessions with this agent`
+    : (canOpenSkill ? `Open ${toolMeta.name} tool skill` : toolMeta.name);
+  if (canOpenSkill) {
+    nameEl.type = 'button';
+    nameEl.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void opts.onOpenToolSkill(toolMeta.name);
+    });
+  }
+  // The semantic header wraps the name while `display: contents` preserves the
+  // shared stacked-row flex layout.
+  const header = document.createElement('span');
+  header.className = 'ac-tool-header';
+  header.appendChild(nameEl);
+  label.appendChild(header);
+  if (toolMeta.description) {
+    // The description line is a separate, full-width flex item.
+    const descLine = document.createElement('span');
+    descLine.className = 'ac-tool-description-line';
+    const descEl = document.createElement('span');
+    descEl.className = 'ac-ability-desc ac-tool-description';
+    descEl.textContent = toolMeta.description;
+    descEl.title = toolMeta.description;
+    descLine.appendChild(descEl);
+    label.appendChild(descLine);
+
+    // Only a genuinely clamped description becomes interactive. This keeps
+    // short descriptions inert while making the full canonical tool text
+    // available with a click (or Enter/Space) on the text itself.
+    requestAnimationFrame(() => {
+      if (descEl.scrollHeight <= descEl.clientHeight + 1) return;
+      descEl.classList.add('ac-tool-description-toggle');
+      descEl.tabIndex = 0;
+      descEl.setAttribute('role', 'button');
+      descEl.setAttribute('aria-expanded', 'false');
+      descEl.setAttribute('aria-label', `Expand description for ${toolMeta.name}`);
+      const toggleDescription = () => {
+        const expanded = row.classList.toggle('ac-tool-desc-expanded');
+        descEl.setAttribute('aria-expanded', String(expanded));
+        descEl.setAttribute(
+          'aria-label',
+          `${expanded ? 'Collapse' : 'Expand'} description for ${toolMeta.name}`,
+        );
+      };
+      descEl.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleDescription();
+      });
+      descEl.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleDescription();
+      });
+    });
+  }
+  row.appendChild(label);
+
+  // The control slot — the SAME right-aligned `.ac-config-control` a config row
+  // uses, so a tool's control and a setting's field/menu land on the same edge.
+  const ctrl = document.createElement('span');
+  ctrl.className = 'ac-config-control';
+  row.appendChild(ctrl);
+
+  // TOOL-STATE-PANEL: the row owns NO interactive toggle. Its only control is a
+  // launcher that opens a panel holding the tool's WHOLE state — Permission
+  // (Off · Ask · Auto) and, when this caller tunes discovery, Visibility
+  // (On request · Loaded) — with exactly one selection per section. State is
+  // only ever changed by a selection inside that panel, mirroring the ability
+  // row's panel-driven selection.
+  // Core tools are always sent, so their state is fixed — no panel at all.
+  if (toolMeta.locked) {
+    const pill = document.createElement('span');
+    pill.className = 'agents-tool-always-on';
+    pill.textContent = 'Core';
+    pill.title = 'Core tool — always sent, cannot be changed.';
+    ctrl.appendChild(pill);
+    return row;
+  }
+
+  // Per-agent discovery only; the admin panel passes showVisibility:false (it
+  // sets the ceiling — enable + permission — not discovery).
+  const showVisibility = !(opts && opts.showVisibility === false);
+  const usePerm = showPerm;
+  if (usePerm || showVisibility) {
+    ctrl.appendChild(_buildToolStateControl(toolMeta, {
+      canEdit,
+      showPerm: usePerm,
+      showVisibility,
+      onPermissionChange,
+      onVisibilityChange,
+      onExecutionChange: opts?.onExecutionChange,
+      onResultDeduplicationChange: opts?.onResultDeduplicationChange,
+    }));
+  }
+  return row;
+}
+
+const _TOOL_STATE_OFF_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg>';
+const _TOOL_STATE_ASK_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.4 9.2a2.7 2.7 0 1 1 3.7 2.5c-.7.3-1.1.9-1.1 1.6v.3"/><path d="M12 17h.01"/></svg>';
+const _TOOL_STATE_AUTO_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.6a1 1 0 0 0 .8 1.6h5.4l-.7 7.8 8.9-10.6a1 1 0 0 0-.8-1.6h-5.4z"/></svg>';
+
+function _buildToolStateControl(toolMeta, opts) {
+  const {
+    canEdit = false,
+    showPerm = true,
+    showVisibility = true,
+    onPermissionChange = _noop,
+    onVisibilityChange = _noop,
+    onExecutionChange,
+    onResultDeduplicationChange,
+  } = opts || {};
+
+  const ORDER = ['deny', 'require_approval', 'allow'];   // least → most permissive
+  // role_access excludes the viewed capability level: shown, but not editable.
+  const roleBlocked = toolMeta.role_blocked === true;
+
+  let perm = ORDER.includes(toolMeta.permMode) ? toolMeta.permMode : 'allow';
+  let vis = toolMeta.mode === 'loaded' ? 'loaded' : 'on_request';
+  let execution = toolMeta.execution ? { ...toolMeta.execution } : null;
+  let savingExecution = false;
+  let resultDeduplication = toolMeta.result_deduplication;
+  let savingResultDeduplication = false;
+  const showResultDeduplication = typeof resultDeduplication === 'boolean'
+    && typeof onResultDeduplicationChange === 'function';
+  const showExecution = !!execution && typeof onExecutionChange === 'function';
+  const backgroundCapable = toolMeta.background_capable === true;
+  const maxSupportedConcurrency = Number.isInteger(toolMeta.max_supported_concurrency)
+    && toolMeta.max_supported_concurrency >= 1 && toolMeta.max_supported_concurrency <= 4
+    ? toolMeta.max_supported_concurrency : 1;
+  const backgroundReason = 'Background execution is not supported for this tool.';
+
+  // ── The control — the shared 3-position PERMISSION tri (Off · Ask · Auto) ───
+  // The tool's toggle IS the `.ac-tri` its row used before, so it reads as one
+  // component with the ability tables' toggles. It is DISPLAY-ONLY: clicking it
+  // opens the panel holding BOTH sections, and the choice is made there. The
+  // knobs show the permission; the BORDER carries the visibility — neutral when
+  // the tool has no visibility, green once it is discoverable or visible.
+  const tri = _buildPermissionTri({
+    value: perm,
+    canEdit: canEdit && !roleBlocked,
+  });
+  tri.classList.add('ac-tool-perm-tri');
+
+  const _permText = m => (m === 'deny' ? 'Deny' : (m === 'require_approval' ? 'Require approval' : 'Allow'));
+  const _visText = m => (m === 'on_request' ? 'Skill on request' : 'Skill loaded');
+  const _permSvg = m => (m === 'deny' ? _TOOL_STATE_OFF_SVG : (m === 'require_approval' ? _TOOL_STATE_ASK_SVG : _TOOL_STATE_AUTO_SVG));
+
+  function paint() {
+    tri._paint(perm);                                  // knobs = the permission
+    // Border = the tool's VISIBILITY. An Off (deny) tool has none — it is neither
+    // discoverable nor visible — so it reads neutral grey; Ask/Auto read green.
+    tri.dataset.vis = (showVisibility && perm !== 'deny') ? vis : 'none';
+    const tip = 'Approval: ' + _permText(perm)
+      + (showVisibility ? ' · Visibility: ' + _visText(vis) : '')
+      + ' — click to choose';
+    tri.title = tip;
+    tri.setAttribute('aria-label', tip);
+  }
+  paint();
+
+  // ── Persist one section's pick. Optimistic, with revert on failure. ────────
+  async function _save(kind, next) {
+    const isPerm = kind === 'perm';
+    const cur = isPerm ? perm : vis;
+    if (next === cur) return true;
+    if (isPerm) perm = next; else vis = next;
+    paint();                                   // optimistic
+    _markSaving(tri);
+    let ok = true;
+    let failureMessage = '';
+    try {
+      const r = isPerm
+        ? onPermissionChange(toolMeta.name, next)
+        : onVisibilityChange(toolMeta.name, next);
+      // Same contract as before: resolve `false` or throw → revert.
+      if (r && typeof r.then === 'function') ok = (await r) !== false;
+    } catch (error) {
+      ok = false;
+      failureMessage = error?.message || 'Not saved';
+    }
+    if (!ok) { if (isPerm) perm = cur; else vis = cur; paint(); }
+    _flashSaveCheck(tri, ok, failureMessage);
+    return ok;
+  }
+
+  async function saveExecution(key, next) {
+    if (!canEdit || savingExecution) return false;
+    if (key === 'max_concurrency' && (!Number.isInteger(next) || next < 1 || next > maxSupportedConcurrency)) {
+      _flashSaveCheck(tri, false, `Concurrency must be an integer from 1 to ${maxSupportedConcurrency}.`);
+      return false;
+    }
+    if (key === 'mode' && next !== 'foreground' && !backgroundCapable) return false;
+    if (execution[key] === next) return true;
+    const before = execution;
+    execution = { ...execution, [key]: next };
+    savingExecution = true;
+    _markSaving(tri);
+    let ok = true;
+    let message = '';
+    try { ok = (await onExecutionChange(toolMeta.name, { ...execution })) !== false; }
+    catch (error) { ok = false; message = error?.message || 'Not saved'; }
+    if (!ok) execution = before;
+    savingExecution = false;
+    _flashSaveCheck(tri, ok, message);
+    return ok;
+  }
+
+  async function saveResultDeduplication() {
+    if (!canEdit || !showResultDeduplication || savingResultDeduplication) return false;
+    const before = resultDeduplication;
+    resultDeduplication = !before;
+    savingResultDeduplication = true;
+    _markSaving(tri);
+    let ok = true;
+    let message = '';
+    try { ok = (await onResultDeduplicationChange(toolMeta.name, resultDeduplication)) !== false; }
+    catch (error) { ok = false; message = error?.message || 'Not saved'; }
+    if (!ok) resultDeduplication = before;
+    savingResultDeduplication = false;
+    _flashSaveCheck(tri, ok, message);
+    return ok;
+  }
+
+  // ── The panel body. Rebuilt on every open/repaint from live state, so the
+  //    ✓ marks always show exactly one selection per section. ─────────────────
+  const _menuItems = () => {
+    const out = [];
+    // Availability (Off · On request · Loaded) comes first, as for skills; Off is the
+    // permission deny, so Permission below keeps only Ask · Auto.
+    if (showVisibility) {
+      out.push({ info: true, className: 'ac-tool-state-head', label: 'Availability' });
+      if (showPerm) out.push({
+        iconHtml: _EYE_OFF_SVG, label: 'Off', checked: perm === 'deny',
+        disabled: !canEdit || roleBlocked, keepOpen: true, action: () => _save('perm', 'deny'),
+      });
+      for (const v of ['on_request', 'loaded']) {
+        out.push({
+          iconHtml: v === 'on_request' ? _DOWNLOAD_SVG : _EYE_ON_SVG,
+          label: _visText(v),
+          checked: perm !== 'deny' && vis === v,
+          disabled: !canEdit || roleBlocked,
+          keepOpen: true,
+          // Leaving Off lands on Require approval, the safe permission.
+          action: async () => (perm !== 'deny' || await _save('perm', 'require_approval')) && _save('vis', v),
+        });
+      }
+    }
+    if (showPerm) {
+      if (out.length) out.push({ separator: true });   // the hairline divider
+      out.push({ info: true, className: 'ac-tool-state-head', label: 'Approval' });
+      for (const m of showVisibility ? ['require_approval', 'allow'] : ORDER) {
+        out.push({
+          iconHtml: _permSvg(m),
+          label: _permText(m),
+          checked: perm === m,
+          disabled: !canEdit || roleBlocked,
+          keepOpen: true,
+          action: () => _save('perm', m),
+        });
+      }
+    }
+    // Settings stay editable; the owner's tier decides whether the agent can use them.
+    if (roleBlocked) out.push({ info: true, className: 'v3-role-note', label: 'Not available to this level' });
+    if (toolMeta.tierBlocked) out.push({ info: true, className: 'v3-tier-note',
+      label: 'Unavailable on the agent owner’s tier: the agent sees this tool, but calls fail until the owner upgrades.' });
+    if (showResultDeduplication) {
+      out.push({ separator: true });
+      out.push({ info: true, className: 'ac-tool-state-head', label: 'Result context' });
+      out.push({ label: 'Suppress identical results', checkbox: true,
+        checked: resultDeduplication, disabled: !canEdit || savingResultDeduplication,
+        keepOpen: true, action: saveResultDeduplication });
+      out.push({ info: true, label: 'Uses the Identity policy. Every call executes and saves its original output; only successful exact repeats can become references. Does not grant permission or skip actions.' });
+    }
+    const policies = toolMeta.advanced_policies;
+    if (policies?.uncertain_outcome === 'review') {
+      out.push({ separator: true });
+      const lines = [
+        'Uncertain outcome: pauses for review after interruption or an unknown result.',
+        'Retry: requires explicit authorization after checking what happened.',
+        'Auto mode: these recovery rules still apply.',
+        'Read-only sessions: this tool is blocked.',
+        'Classification: applies to the whole tool, including read-only commands or actions.',
+      ];
+      if (policies.build_finish === 'reconcile_existing_job') {
+        lines.push('Build finish: reconciles the existing job and returns its result; do not submit finish again.');
+      }
+      out.push({ disclosure: true, label: 'Advanced policies', lines,
+        note: 'Fixed runtime safeguards. Permission settings do not override them.' });
+    }
+    if (showExecution && toolMeta.duplicate_protection_capable === true) {
+      out.push({ separator: true });
+      out.push({ info: true, className: 'ac-tool-state-head', label: 'Duplicate-action protection' });
+      for (const value of ['on', 'off']) out.push({
+        label: value === 'on' ? 'On' : 'Off for new actions',
+        checked: execution.duplicate_protection === value, radio: true,
+        disabled: !canEdit || savingExecution, keepOpen: true,
+        action: () => saveExecution('duplicate_protection', value),
+      });
+      out.push({ info: true, label: 'Saved and uncertain actions remain protected. A matching additional action needs fresh user intent and specific authorization.' });
+    }
+    if (showExecution) {
+      out.push({ separator: true });
+      for (const [key, heading, choices] of [
+        ['mode', 'Execution', [['foreground', 'Foreground'], ['background', 'Background'], ['model', 'Model chooses']]],
+      ]) {
+        out.push({ info: true, className: 'ac-tool-state-head', label: heading });
+        for (const [value, label] of choices) {
+          const unsupported = !backgroundCapable && (key === 'mode' ? value !== 'foreground' : value !== 'stop');
+          out.push({
+            label, checked: execution[key] === value, radio: true,
+            disabled: !canEdit || savingExecution || unsupported,
+            title: unsupported ? backgroundReason : '',
+            keepOpen: true, action: () => saveExecution(key, value),
+          });
+        }
+      }
+      if (backgroundCapable) out.push({
+        info: true,
+        label: 'Background results that arrive after the run ends wake the agent; only the second Stop cancels them.',
+      });
+      if (!backgroundCapable) out.push({ info: true, label: backgroundReason });
+      out.push({
+        field: true, fieldType: 'number', label: `Maximum concurrency (1–${maxSupportedConcurrency})`,
+        value: execution.max_concurrency, min: 1, max: maxSupportedConcurrency, step: 1,
+        disabled: !canEdit || savingExecution || maxSupportedConcurrency === 1,
+        title: maxSupportedConcurrency === 1 ? 'This tool is restricted to one execution at a time.' : '',
+        onSave: async value => {
+          await saveExecution('max_concurrency', value.trim() === '' ? NaN : Number(value));
+          if (document.getElementById('files-floating-menu')?._owner === tri) {
+            const rect = document.getElementById('files-floating-menu').getBoundingClientRect();
+            openFloatingMenu(_menuItems, rect.top, rect.left, tri);
+          }
+        },
+      });
+    }
+    return out;
+  };
+
+  tri.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tri.click(); }
+  });
+  tri.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!canEdit) return;
+    if (document.getElementById('files-floating-menu')?._owner === tri) { closeFloatingMenu(); return; }
+    const r = tri.getBoundingClientRect();
+    // Anchor the panel just under the toggle, right-edge aligned. 180 is the
+    // width `openFloatingMenu` clamps against, so the two stay consistent, and
+    // the click's own Y keeps the panel beside the detent the user hit.
+    const top = e.clientY ? e.clientY + 8 : r.bottom + 4;
+    openFloatingMenu(_menuItems, top, Math.max(8, r.right - 180), tri);
+  });
+
+  return tri;
+}
+
+const _EYE_ON_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const _EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>';
+const _DOWNLOAD_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>';
+
+let floatingMenuCleanup = null;
+let releaseBack = null;
+
+/** Closes the row menu; keepBack leaves the back press claimed when the same menu is only repainted. */
+export function closeFloatingMenu(keepBack = false) {
+  if (!keepBack && releaseBack) { const release = releaseBack; releaseBack = null; release(); }
+  if (floatingMenuCleanup) { floatingMenuCleanup(); floatingMenuCleanup = null; }
+  const m = document.getElementById('files-floating-menu');
+  if (m) m.remove();
+}
+
+function openFloatingMenu(items, top, left, owner = null) {
+  // A repaint replaces the same menu, so the claim it already holds carries over.
+  const claimed = Boolean(releaseBack);
+  closeFloatingMenu(true);
+  if (!claimed) releaseBack = pushBackHandler(() => { closeFloatingMenu(); return true; });
+
+  const menu = document.createElement('div');
+  menu.className = 'files-tab-menu';
+  menu.id = 'files-floating-menu';
+  menu._owner = owner;
+
+  // `items` may be a FACTORY rather than a plain array: a multi-section panel
+  // (e.g. the tool Permission + Visibility picker) repaints itself in place
+  // after each selection, so the factory is re-invoked on every open/repaint to
+  // read the live values.
+  const list = (typeof items === 'function' ? items() : items) || [];
+
+  for (const item of list) {
+    if (item.separator) {
+      const hr = document.createElement('div');
+      hr.className = 'files-tab-menu-sep';
+      menu.appendChild(hr);
+      continue;
+    }
+    if (item.disclosure) {
+      menu.classList.add('ac-tool-policy-menu');
+      const details = document.createElement('details');
+      details.className = 'ac-tool-policies';
+      details.addEventListener('toggle', positionMenu);
+      const summary = document.createElement('summary');
+      summary.textContent = item.label;
+      details.appendChild(summary);
+      for (const text of [...item.lines, item.note]) {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = text;
+        details.appendChild(paragraph);
+      }
+      menu.appendChild(details);
+      continue;
+    }
+    if (item.info) {
+      const row = document.createElement('div');
+      // `className` lets a section header opt out of the info row's fixed
+      // min-width (used by the tool-state panel's section labels).
+      row.className = 'files-tab-menu-info' + (item.className ? ' ' + item.className : '');
+      if (item.id) row.id = item.id;
+      row.textContent = item.label || '';
+      menu.appendChild(row);
+      continue;
+    }
+    if (item.field) {
+      const wrap = document.createElement('div');
+      wrap.className = 'files-tab-menu-field';
+      if (item.label) {
+        const lab = document.createElement('label');
+        lab.textContent = item.label;
+        wrap.appendChild(lab);
+      }
+      const inp = document.createElement('input');
+      inp.type = item.fieldType || 'text';
+      inp.value = item.value ?? '';
+      inp.disabled = !!item.disabled;
+      if (item.title) inp.title = item.title;
+      for (const bound of ['min', 'max', 'step']) {
+        if (item[bound] !== undefined) inp[bound] = String(item[bound]);
+      }
+      if (item.label) inp.setAttribute('aria-label', item.label);
+      inp.placeholder = item.placeholder || '';
+      inp.spellcheck = false;
+      inp.autocomplete = item.fieldType === 'password' ? 'new-password' : 'off';
+      if (item.fieldKey) inp.dataset.field = item.fieldKey;
+      inp.addEventListener('click', (e) => e.stopPropagation());
+      if (typeof item.onInput === 'function') {
+        inp.addEventListener('input', () => item.onInput(inp.value));
+      }
+      if (typeof item.onSave === 'function') {
+        inp.addEventListener('change', () => item.onSave(inp.value));
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); item.onSave(inp.value); inp.blur(); }
+        });
+      }
+      wrap.appendChild(inp);
+      menu.appendChild(wrap);
+      continue;
+    }
+    const btn = document.createElement('button');
+    btn.className = 'files-tab-menu-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '');
+    btn.type = 'button';
+    btn.disabled = !!item.disabled;
+    if (item.title) btn.title = item.title;
+    if (item.checkbox) btn.style.webkitTapHighlightColor = 'transparent';
+    if (item.radio || item.checkbox) {
+      btn.setAttribute('role', item.checkbox ? 'menuitemcheckbox' : 'menuitemradio');
+      btn.setAttribute('aria-checked', String(!!item.checked));
+    }
+    // An item may ship its own inline SVG (`iconHtml`) instead of a lucide name.
+    // The ability tables' controls use inline SVGs so they never depend on a
+    // lucide pass having run on the page.
+    let i;
+    if (item.iconHtml) {
+      i = document.createElement('span');
+      i.className = 'files-tab-menu-icon';
+      i.setAttribute('aria-hidden', 'true');
+      i.innerHTML = item.iconHtml;
+    } else {
+      i = document.createElement('i');
+      i.setAttribute('data-lucide', item.icon || 'circle');
+      i.className = 'lucide-icon';
+    }
+    btn.appendChild(i);
+    const lbl = document.createElement('span');
+    lbl.textContent = item.label;
+    btn.appendChild(lbl);
+    const check = document.createElement('span');
+    check.className = 'files-tab-menu-check';
+    check.textContent = '\u2713';
+    btn.appendChild(check);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const actionable = !item.disabled && typeof item.action === 'function';
+      if (actionable && item.checkbox) requestTouchVibration(e);
+      // A `keepOpen` item belongs to a MULTI-SECTION panel: the user still has
+      // another section to set, so the panel stays up and repaints in place (the
+      // ✓ marks follow the new selection) instead of dismissing on the first pick.
+      if (actionable && item.keepOpen) {
+        const restoreCheckboxFocus = item.checkbox && document.activeElement === btn;
+        const r = item.action();
+        const repaint = () => {
+          // Only repaint if the user hasn't already dismissed the panel.
+          if (document.getElementById('files-floating-menu')?._owner !== owner) return;
+          openFloatingMenu(items, top, left, owner);
+          if (restoreCheckboxFocus && document.activeElement === document.body) {
+            document.querySelector('#files-floating-menu [role="menuitemcheckbox"]:not(:disabled)')?.focus();
+          }
+        };
+        repaint();                                        // optimistic
+        if (r && typeof r.then === 'function') r.then(repaint, repaint);   // settle/revert
+        return;
+      }
+      closeFloatingMenu();
+      if (actionable) item.action();
+    });
+    menu.appendChild(btn);
+  }
+
+  document.body.appendChild(menu);
+
+  function positionMenu() {
+    // Cap the panel to the viewport so it scrolls inside itself instead of
+    // spilling past an edge; re-run on resize so a narrowed window keeps it whole.
+    menu.style.maxWidth = (window.innerWidth - 16) + 'px';
+    menu.style.maxHeight = (window.innerHeight - 16) + 'px';
+    menu.style.overflowY = 'auto';
+    const rect = menu.getBoundingClientRect();
+    const menuWidth = rect.width || 180;
+    const menuHeight = rect.height || 8;
+    const clampedTop  = Math.max(8, Math.min(window.innerHeight - menuHeight - 8, top));
+    const clampedLeft = Math.max(8, Math.min(window.innerWidth  - menuWidth  - 8, left));
+    menu.style.top  = clampedTop + 'px';
+    menu.style.left = clampedLeft + 'px';
+  }
+  positionMenu();
+
+  _refreshLucideIcons(menu);
+
+  // The owning toggle handles repeat clicks; any other outside press dismisses.
+  const outside = event => {
+    const proxy = event.target.closest?.('.ac-row-more');
+    if (menu.contains(event.target) || owner?.contains(event.target) ||
+        (owner && proxy?._floatingMenuOwner === owner)) return;
+    closeFloatingMenu();
+    if (event.type !== 'pointerdown') return;
+    // The dismissing press only closes the panel: its mousedown, touchend and
+    // click never reach the page, so engaging another control takes a second press.
+    // The next pointerdown ends the swallow even if no click followed (a drag).
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const swallowed = ['mousedown', 'mouseup', 'touchend', 'click'];
+    const release = () => {
+      for (const type of swallowed) document.removeEventListener(type, eat, true);
+      document.removeEventListener('pointerdown', release, true);
+    };
+    const eat = e => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.type === 'click') release();
+    };
+    for (const type of swallowed) document.addEventListener(type, eat, true);
+    document.addEventListener('pointerdown', release, true);
+  };
+  // Scrolling anything but the panel closes it instead of leaving it behind; a
+  // focused field inside it is exempt because a mobile keyboard scrolls the page.
+  const onScroll = event => {
+    const active = document.activeElement;
+    if (menu.contains(event.target) || (active?.tagName === 'INPUT' && menu.contains(active))) return;
+    closeFloatingMenu();
+  };
+  const onKey = event => { if (event.key === 'Escape') closeFloatingMenu(); };
+  const cleanup = () => {
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('contextmenu', outside, true);
+    document.removeEventListener('scroll', onScroll, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('resize', positionMenu);
+  };
+  floatingMenuCleanup = cleanup;
+  document.addEventListener('pointerdown', outside, true);
+  document.addEventListener('contextmenu', outside, true);
+  document.addEventListener('scroll', onScroll, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', positionMenu);
+}
+
+export function _buildAbilitySettingsList() {
+  const list = document.createElement('div');
+  list.className = 'ac-list ac-config-list ac-config-settings';
+  return list;
+}

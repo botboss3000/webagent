@@ -1,0 +1,71 @@
+{
+  "name": "wiki_create",
+  "description": "App administrators only: create a Wiki article.",
+  "effect": "write",
+  "retention": {
+    "drop_input_fields": [
+      "body"
+    ]
+  },
+  "default_policy": {
+    "operator": "allow"
+  },
+  "owner_tier": [
+    "administrator"
+  ],
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "body": {
+        "type": "string",
+        "description": "Markdown. Link articles with [[Title]] or [[slug]]."
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "maxItems": 20
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "maxItems": 30,
+        "description": "Synonyms, related terms and questions this article answers, so searches with other wording find it."
+      },
+      "category": {
+        "type": "string",
+        "maxLength": 60
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "published"
+        ]
+      }
+    },
+    "required": [
+      "title",
+      "body"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "create a wiki article",
+      "write a new wiki page"
+    ],
+    "keywords": [
+      "new wiki page"
+    ]
+  }
+}

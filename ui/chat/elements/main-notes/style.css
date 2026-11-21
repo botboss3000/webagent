@@ -1,0 +1,37 @@
+@import url('/ui/components/expand-list/expand-list.css');
+/* Main Notes chip and card. The chip joins the session-tabs row beside Spawns and Broker;
+   CSS order keeps that visual order even though those chips re-append themselves. The card
+   reuses the shared .sub-chip-menu and .broker-card skins (including phone positioning) and
+   only adds the notes-specific content styles below. */
+#chat-sub-header #chat-sub-scroll-wrap > #chat-broker-chip { order: 1; }
+#chat-sub-header #chat-sub-scroll-wrap > #chat-main-notes-chip { order: 2; }
+#chat-sub-header .sub-chip.chip-notes { max-width: 100%; }
+/* The shared chip skin's id-specificity display would otherwise defeat the hidden attribute. */
+#chat-sub-header .sub-chip.chip-notes[hidden] { display: none; }
+#chat-sub-header .sub-chip.chip-notes .chip-status { color: var(--brand); }
+#chat-sub-header .sub-chip.chip-notes .chip-status svg { width: 12px; height: 12px; }
+#chat-sub-header .sub-chip.chip-notes:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.main-notes-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.main-notes-chip-meta { color: var(--fg-3); font-weight: 500; }
+.main-notes-chip-badge { min-width: 15px; padding: 0 4px; border-radius: 999px; background: rgba(var(--warning-rgb), .18); color: var(--warning); font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; font-variant-numeric: tabular-nums; }
+.main-notes-chip-badge[hidden] { display: none; }
+
+.main-notes-card { max-height: min(70dvh, 560px); overscroll-behavior: contain; -webkit-tap-highlight-color: transparent; }
+.main-notes-card:focus-visible, .main-notes-card :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.main-notes-body { display: grid; gap: 2px; min-width: 0; }
+.main-notes-body:empty { display: none; }
+.main-notes-card p, .main-notes-card li { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.main-notes-card h4 { margin: 6px 0 2px; }
+.main-notes-notice { margin: 0 0 6px; }
+.main-notes-notice:empty { display: none; }
+.main-notes-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 2px; }
+.main-notes-card .ac-btn { border: var(--border-width) solid var(--border); border-radius: var(--r-sm, 6px); padding: 5px 9px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.main-notes-card .ac-btn:disabled { opacity: .55; cursor: default; }
+.main-notes-card a.ac-btn { display: inline-flex; align-items: center; text-decoration: none; }
+.main-notes-entry { padding-block: 2px; }
+.main-notes-card .xl-content .ac-btn, .main-notes-entry .ac-btn { margin: 4px 6px 0 0; }
+.main-notes-editor { display: grid; gap: 8px; min-width: 0; }
+.main-notes-editor label { display: grid; gap: 4px; font-size: 12px; }
+.main-notes-editor input, .main-notes-editor select, .main-notes-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; border: var(--border-width) solid var(--border); border-radius: var(--r-sm, 6px); padding: 6px; background: var(--bg-2); color: inherit; font: inherit; }
+.main-notes-editor textarea { min-height: 4em; resize: vertical; }
+.main-notes-editor [hidden] { display: none; }

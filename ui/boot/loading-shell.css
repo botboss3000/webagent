@@ -1,0 +1,359 @@
+/* Moved from the app-wide stylesheets (ui/shared/css/app1-3.css, index.css) in their
+   original order; linked from index.html where that sheet loaded. */
+/* ============================================================
+   Stargaze background + dynamic spotlight overrides
+   Loaded last so it wins the cascade.
+   ============================================================ */
+
+/* —— Page background: the "Background" palette swatch (--bg-0). Solid (not the
+   design-system gradient) so the animated genui shows through cleanly; tracks
+   the swatch live in both themes. body resolves --bg-0 per theme; html keeps the
+   dark base (only the few-px padding frame shows it). —— */
+html, body { background: var(--bg-0) !important; }
+/* Lift the main layout shell above the stargaze genui/overlay. Scoped to the
+   actual layout containers — NOT `body > *` — so dynamically-appended popups
+   (.tutorial-popover, .session-row-actions, .feedback-modal, etc.) keep their
+   own `position: fixed` instead of being forced into `position: relative`. */
+#stage { position: relative; z-index: 2; }
+/* z-index 3 keeps the header (and its dropdown menus, which open down over
+   the stage) above #stage, while staying above the z-index-1 cursor glow so
+   the glow never washes over the header. */
+#main-header { position: relative; z-index: 3; }
+/* ── Minimal progressive-load shell ────────────────────────────────────────
+   Before the saved page has mounted, #main-panel is an empty floating card.
+   Keep its flex footprint so the chat column/pill cannot jump sideways when
+   boot completes, but make the card itself disappear into the animated page
+   background. The chat surface is already transparent below, leaving the boot
+   scene, the hard-coded composer pill, and the small header as the only chrome. */
+body.is-booting #main-panel,
+body.is-booting #chat-resize-handle {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* Desktop boot layout: keep the launch surface full-stage while its empty
+   composer remains bottom-docked. The canonical #chat-input-area rule in
+   ui/chat/chat-shared.css supplies that dock, including for a brand-new session. */
+/* Avoid showing a narrow intrinsic boot pill while chat_ui.json is resolving.
+   app-prompts.js supplies the resolved idle-footer geometry, then marks it ready. */
+body.is-booting:not([data-chat-ui-ready]) #chat-input-row.chat-pill-boot {
+  visibility: hidden;
+}
+@media (min-width: 801px) {
+  body.is-booting:not(.app-restricted) #chat-panel {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    /* The static boot pill receives this value from chat_ui.json in
+       app-prompts.js. Do not substitute content_max_width here: the initial
+       shell must match idle_footer.chat_pill.pill_width. */
+    --chat-pill-current-width: var(--chat-pill-width) !important;
+    z-index: 4;
+  }
+  body.is-booting:not(.app-restricted) #chat-panel > #chat-header,
+  body.is-booting:not(.app-restricted) #chat-panel > #chat-sub-header,
+  body.is-booting:not(.app-restricted) #chat-panel > #chat-messages,
+  body.is-booting:not(.app-restricted) #chat-panel > .chat-spinner-edge {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+#chat-input-area {
+  /* The composer must remain docked while sessions and footer profiles change.
+     Animate internal spacing only — never its vertical position. */
+  transition: padding 0.3s ease, gap 0.3s ease;
+}
+/* —— Chat panel: transparent — sits on the background directly —— */
+#chat-panel,
+#chat-panel > #chat-header,
+#chat-panel > #chat-messages {
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+#chat-panel {
+  /* design-system.css styles this as a floating card (full border + 22px
+     radius + shadow). Strip all of it so the chat sits edgeless on the
+     stage — otherwise a faint hairline traces the top/right/bottom. */
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+/* Chat bubbles follow the theme by default and are overridable — including
+   opacity — from the Appearance panel's "User bubble" / "Agent bubble" swatches.
+   A 0-opacity bubble = text with no background.
+
+   IMPORTANT: the theme-following default is derived HERE, at the bubble element,
+   via color-mix(... var(--bg-elev) ...) — NOT as a global token at :root. The
+   Appearance theme override of --bg-elev lands on <body>, so a default computed
+   at :root would bake in the *old* panel colour before the override applies
+   (that was the "peach bubbles in every theme" bug). Resolving --bg-elev here,
+   inside <body>, picks up the live themed panel colour. The "User/Agent bubble"
+   swatches (--user-bubble-bg / --agent-bubble-bg) stay UNSET unless customised,
+   so this fallback is what normally paints. */
+.chat-bubble { background: var(--chat-bubble-bg, inherit) !important; }
+.chat-bubble.user  { --chat-bubble-bg: var(--user-bubble-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)); --chat-bubble-border: var(--user-bubble-border); }
+.chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)); --chat-bubble-border: var(--agent-bubble-border); }
+body.light-mode .chat-bubble.user  { --chat-bubble-bg: var(--user-bubble-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)); }
+body.light-mode .chat-bubble.agent { --chat-bubble-bg: var(--agent-bubble-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)); }
+#chat-header {
+  border-bottom: none !important;
+  background: transparent !important;
+}
+/* Messages stay fully visible all the way to the bottom of the panel and
+   scroll *behind* the floating input area, which has a transparent footer
+   and a translucent glass pill — so the pill and its buttons read as
+   floating on top of the message bubbles. chat.js still reserves
+   --chat-input-h + 24px of bottom padding so the newest message rests just
+   above the pill at scroll-bottom (visible, never tucked under it); older
+   bubbles pass behind the glass as you scroll. No fade mask: a mask would
+   dissolve the bubbles before they reached the pill, which is the opposite
+   of the floating-on-top effect we want here. */
+/* Message bubbles get their own glass surface */
+  #chat-panel .chat-bubble {
+    /* Per-role bubble token (set by .chat-bubble.user/.agent above); the glass
+       tint is the fallback for any bubble without a role class. */
+    background: var(--chat-bubble-bg, color-mix(in oklab, currentColor 7%, transparent)) !important;
+    border: var(--border-width) solid var(--chat-bubble-border, color-mix(in oklab, currentColor 12%, transparent)) !important;
+    backdrop-filter: blur(12px) saturate(140%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
+    border-radius: var(--chat-role-radius, 14px) !important;
+    position: relative;
+    overflow: hidden;
+}
+#chat-panel .chat-bubble[data-timestamp-order-anomaly="true"] {
+    border-color: var(--warning) !important;
+}
+/* Agent prose sits directly on the chat stage. Remove the resting glass layers,
+   not the .spot overlay: its pointer-driven glimmer still paints on engagement.
+   Transparency follows the actual (potentially animated) backdrop in both themes
+   instead of approximating it with a solid theme colour. User bubbles and the
+   technical schema-inspect panel retain their separate surfaces. */
+#chat-panel .chat-bubble.agent {
+  padding-left: var(--chat-agent-padding-left, 4px);
+  --chat-bubble-bg: transparent;
+  background: var(--chat-agent-background, transparent) !important;
+  border: var(--chat-agent-border, none) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* JSON role surfaces override the resting fill/edge, but never the glimmer. */
+#chat-panel .chat-bubble.user {
+  background: var(--chat-user-background) !important;
+  border: var(--chat-user-border) !important;
+}
+body.light-mode #chat-panel .chat-bubble.user {
+  background: var(--chat-user-background-light, var(--chat-user-background)) !important;
+}
+body.light-mode #chat-panel .chat-bubble.agent:not(.activity-group) {
+  background: var(--chat-agent-background-light, var(--chat-agent-background, transparent)) !important;
+}
+/* Activity groups are structural transcript shells. Their nested .ca-* rows
+   still paint their own surfaces; the shell also needs unclipped overflow and
+   square corners, unlike the rounded glimmer bounds on normal agent prose. */
+#chat-panel .chat-bubble.agent.activity-group {
+  --chat-bubble-bg: transparent;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  overflow: visible !important;
+}
+/* Input row sits directly on the page background — no wrapping glass surface */
+#chat-input-area {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  margin: 0 !important;
+  position: absolute;
+  overflow: visible;
+  bottom: 6px;
+}
+/* Floating glass treatment for selected chat-style controls. */
+.chat-surface .chat-pill,
+.chat-surface .chat-pill:focus-within,
+.chat-surface .chat-pill.drag-over,
+#chat-panel .chat-pill,
+.ability-search-pill.chat-pill,
+#genui-prompt-row.chat-pill,
+.browser-prompt-row.chat-pill,
+#ac-pa-bar-row.chat-pill,
+#ac-ds-pa-bar-row.chat-pill {
+  background: color-mix(in oklab, currentColor 7%, transparent) !important;
+  border: var(--border-width) solid color-mix(in oklab, currentColor 12%, transparent) !important;
+  backdrop-filter: blur(12px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(140%) !important;
+}
+.chat-surface .chat-pill:focus-within,
+#chat-panel .chat-pill:focus-within,
+.ability-search-pill.chat-pill:focus-within,
+#genui-prompt-row.chat-pill:focus-within,
+.browser-prompt-row.chat-pill:focus-within,
+#ac-pa-bar-row.chat-pill:focus-within,
+#ac-ds-pa-bar-row.chat-pill:focus-within {
+  border-color: color-mix(in oklab, currentColor 22%, transparent) !important;
+  background: color-mix(in oklab, currentColor 9%, transparent) !important;
+}
+/* Chat composer pill — its OWN customisable background (Appearance → "Chat pill",
+   --chat-pill-bg), independent of the other floating pills above. Left UNSET by
+   default so it falls back to the SAME theme-derived panel tint as the message
+   bubbles (color-mix on --bg-elev, resolved here inside <body> so it tracks the
+   live theme — same reasoning as the bubble default), making the user bubble,
+   agent bubble and chat pill match out of the box. Pin --chat-pill-bg (or set 0
+   opacity) to recolour just this pill. The shared rules above still supply the
+   border/blur/focus/drag feedback; these override only the background so a pinned
+   colour survives focus + drag instead of flashing back to glass. */
+.chat-surface .chat-pill,
+.chat-surface .chat-pill:focus-within,
+.chat-surface .chat-pill.drag-over,
+#chat-panel .chat-pill,
+#chat-panel .chat-pill:focus-within,
+#chat-panel .chat-pill.drag-over {
+  background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 82%, transparent)) !important;
+}
+body.light-mode .chat-surface .chat-pill,
+body.light-mode .chat-surface .chat-pill:focus-within,
+body.light-mode .chat-surface .chat-pill.drag-over,
+body.light-mode #chat-panel .chat-pill,
+body.light-mode #chat-panel .chat-pill:focus-within,
+body.light-mode #chat-panel .chat-pill.drag-over {
+  background: var(--chat-pill-bg, color-mix(in oklab, var(--bg-elev) 85%, transparent)) !important;
+}
+/* The primary chat pill gets its own border token, matching the independently
+   configurable fill above. Focus and drag states retain the chosen border. */
+.chat-surface .chat-pill,
+.chat-surface .chat-pill:focus-within,
+.chat-surface .chat-pill.drag-over,
+#chat-panel .chat-pill,
+#chat-panel .chat-pill:focus-within,
+#chat-panel .chat-pill.drag-over {
+  border: var(--border-width) solid var(--chat-pill-border) !important;
+}
+.chat-surface .chat-pill-input,
+#chat-panel .chat-pill-input,
+.ability-search-pill .chat-pill-input,
+#genui-prompt-row .chat-pill-input,
+.browser-prompt-row .chat-pill-input,
+#ac-pa-bar-row .chat-pill-input,
+#ac-ds-pa-bar-row .chat-pill-input {
+  background: transparent !important;
+}
+/* Keep all chat content centred on very wide hosts while preserving the
+   surface-specific outer dimensions (panel, floating card, or iframe).
+   The scrollbar lives on the parent (#chat-messages), so #chat-messages-inner
+   keeps its max-width while the scrollbar sticks to the panel edge. */
+#chat-panel #chat-messages-inner,
+#chat-panel #chat-input-area {
+  width: 100%;
+  max-width: var(--chat-surface-max-width, 1000px);
+  margin-inline: auto !important;
+}
+/* —— Main panel: a real panel (glass) —— */
+#main-panel {
+  background: color-mix(in oklab, currentColor 4%, transparent) !important;
+  border: var(--border-width) solid color-mix(in oklab, currentColor 10%, transparent) !important;
+  border-radius: 14px !important;
+  backdrop-filter: blur(16px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(150%) !important;
+  box-shadow:
+    0 20px 60px -30px rgba(var(--shadow-rgb),0.6) !important;
+  /* top/bottom 0 so the card aligns with the chat pane (header top / input
+     pill bottom); left trimmed for a tighter gutter; right 1px to the handle. */
+  margin: 0 1px 6px 2px !important;
+  overflow: hidden !important;
+  position: relative;
+}
+body.light-mode #main-panel {
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.6) inset, /* KEEP (intentional): white inset glass top-highlight; ink-rgb is dark in light mode and would invert it */
+    0 15px 50px -25px rgba(var(--shadow-rgb),0.18) !important;
+}
+/* Tighter on small screens — the outer margin ate too much width, squashing
+   content. Pull panels closer to the screen edge and trim chat padding. */
+@media (max-width: 800px) {
+  #main-panel { margin: 2px !important; }
+  #chat-messages-inner { padding-left: 8px; padding-right: 8px; }
+  #chat-input-area { padding-left: 6px; padding-right: 6px; }
+}
+/* —— Main-panel horizontal overscroll: the swipe-to-flip page gesture was
+   removed, so this rule now only stops an overscroll at the panel edge from
+   chaining into the browser's history back/forward. Inner native scrollers
+   (carousels, wide tables, tab strips) set their own overscroll-behavior-x. —— */
+#main-panel,
+#main-panel .tab-content,
+html,
+body {
+  overscroll-behavior-x: none;
+}
+/* —— Cursor glow: a single full-viewport layer behind every panel ——
+   This lives at the page-background level (below #stage), so the chat panel
+   (transparent) and main panel (glass) never clip it. Its only edges are the
+   screen edges, where the radial gradient has already faded to nothing — so
+   there is no visible hard edge anywhere around the chat panel. Driven in
+   viewport pixels by the pointermove handler below. */
+#cursor-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  --glow-color: rgba(var(--brand-rgb), 0.06);
+  background:
+    radial-gradient(
+      var(--glow-radius, 520px) circle at var(--gx, -100%) var(--gy, -100%),
+      var(--glow-color, rgba(var(--brand-rgb), 0.06)) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      var(--glow-radius, 520px) circle at var(--boot-gx, -100%) var(--boot-gy, -100%),
+      var(--glow-color, rgba(var(--brand-rgb), 0.06)) 0%,
+      transparent 60%
+    );
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+#cursor-glow.is-on,
+#cursor-glow.boot-is-on { opacity: 1; }
+/* ── Chat pill focused: hide main app header + chat panel header ──
+   When the chat pill is focused on MOBILE, the user is typing — reclaim
+   vertical space by hiding the top chrome (#main-header) and the chat panel's
+   own header (#chat-header + #chat-sub-header). Toggled by chat-ui.js
+   focusin/focusout on the document. Only active at narrow (≤800px) viewports.
+   Gated on body.hide-header-kb + hhk-active — set at boot from the
+   hide_header_on_keyboard app setting (default OFF), with threshold
+   checked by the viewport tracker at runtime. */
+@media (max-width: 800px) {
+  body.hide-header-kb.hhk-active.chat-pill-focused:not(.render-recorder-active) #main-header,
+  body.hide-header-kb.hhk-active.chat-pill-focused #chat-header,
+  body.hide-header-kb.hhk-active.chat-pill-focused #chat-sub-header {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: max-height 0.15s ease, opacity 0.15s ease, padding 0.15s ease !important;
+  }
+}
+/* Feedback styles live with the dropdown feedback view (dropdown-feedback-view).
+   All panels share the login-panel look: 360px, 12px border-radius,
+   var(--bg-elev) background, var(--border) border, login-panel shadow. */
+
+/* app1 normally disables the session trigger whenever the server is offline.
+   Cached-reader mode is the exception: once IndexedDB has painted the list,
+   browsing those sessions is the primary available action. */
+body[data-offline-readonly="true"] .session-dropdown[data-offline="true"][data-loaded="true"] .session-dropdown-trigger {
+  pointer-events: auto;
+  opacity: 1;
+  cursor: pointer;
+}
+/* Role-scoped glimmer parameters affect only chat bubbles, never other spots. */
+.chat-bubble.user { --chat-role-radius: var(--chat-user-radius,14px); --spot-radius:var(--chat-user-glimmer-radius,240px); --spot-color:var(--chat-user-glimmer-color,rgba(var(--brand-rgb),0.12)); }
+.chat-bubble.agent { --chat-role-radius: var(--chat-agent-radius,14px); --spot-radius:var(--chat-agent-glimmer-radius,240px); --spot-color:var(--chat-agent-glimmer-color,rgba(var(--brand-rgb),0.12)); }

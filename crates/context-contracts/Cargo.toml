@@ -1,0 +1,13 @@
+[package]
+name = "webagent-context-contracts"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = {version="1",features=["derive"]}
+# Compaction plans echo host config (including calibrated f64 ratios) and are compared
+# exactly; without float_roundtrip about 1 in 9 ratios parse back one bit off.
+serde_json = {version="1",features=["float_roundtrip"]}
+sha2 = "0.10"
+hex = "0.4"

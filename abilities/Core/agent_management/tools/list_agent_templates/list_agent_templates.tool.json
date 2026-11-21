@@ -1,0 +1,28 @@
+{
+  "name": "list_agent_templates",
+  "description": "List available safe agent creation templates.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which agent templates are there",
+      "list templates for a new agent"
+    ],
+    "keywords": [
+      "templates"
+    ]
+  }
+}

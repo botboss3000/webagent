@@ -1,0 +1,76 @@
+{
+  "name": "performance_work",
+  "description": "Run fixed v3 benchmarks or CPU/allocation profiles against a frozen isolated source task; never deploys.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "benchmark",
+          "profile_cpu",
+          "profile_allocations",
+          "status",
+          "cancel",
+          "artifact"
+        ]
+      },
+      "task_id": {
+        "type": "string"
+      },
+      "expected_inputs_sha256": {
+        "type": "string"
+      },
+      "request_id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{8,80}$"
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "baseline",
+          "candidate"
+        ]
+      },
+      "artifact": {
+        "type": "string",
+        "description": "Exact profiler artifact basename from this receipt; no paths"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 67108864
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16384
+      }
+    },
+    "required": [
+      "action",
+      "task_id",
+      "request_id",
+      "expected_inputs_sha256"
+    ]
+  },
+  "match": {
+    "examples": [
+      "benchmark this code",
+      "profile CPU and memory use",
+      "measure the speed of a change"
+    ],
+    "keywords": [
+      "benchmark",
+      "profile",
+      "performance"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "display_name": "Managed Knowledge Files",
+  "kind": "ability",
+  "description": "Staff-maintained text and Markdown files (menus, price lists, policies, FAQs) the agent can list, search and read.",
+  "icon": "files",
+  "color": "#73daca",
+  "order": 3,
+  "placeholder": false,
+  "readiness": "ready",
+  "config": {},
+  "migration_note": "Compiled Rust adapter storing text files in the agent plane. Staff (owner or member) save and delete; any permitted session reads. No binary/PDF extraction or automatic recall yet. Deployment requires rebuilding both API and loop.",
+  "skill_summary": "Search and read the agent's staff-maintained knowledge files; staff can save or delete them.",
+  "owner_tier": [
+    "free",
+    "administrator"
+  ]
+}

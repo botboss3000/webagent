@@ -1,0 +1,38 @@
+{
+  "name": "run_optimizer",
+  "description": "Ask this agent's System model to propose a clearer prompt; returns a proposal only.",
+  "effect": "read",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "maxLength": 16000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "purpose": {
+        "maxLength": 2000,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "purpose"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "improve this agent's prompt",
+      "suggest a better prompt"
+    ],
+    "keywords": [
+      "optimize prompt"
+    ]
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "name": "source_publish",
+  "description": "Fast-forward production to the reviewed preview commit and request its exact remote build.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "site_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "connection_revision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "request_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "commit_sha": {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 40
+      },
+      "expected_production_sha": {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 40
+      }
+    },
+    "required": [
+      "site_id",
+      "connection_revision",
+      "request_id",
+      "commit_sha",
+      "expected_production_sha"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "publish the site to production",
+      "make the preview live"
+    ],
+    "keywords": [
+      "publish",
+      "production"
+    ]
+  },
+  "duplicate_protection": {
+    "key": [
+      "site_id",
+      "commit_sha",
+      "expected_production_sha"
+    ],
+    "window": "forever"
+  },
+  "critical": true
+}

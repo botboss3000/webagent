@@ -1,0 +1,29 @@
+{
+  "name": "browser_extension_status",
+  "description": "Whether the user's browser extension is linked and online and which sites it may control.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "is my browser extension connected",
+      "is my browser extension online"
+    ],
+    "keywords": [
+      "extension status",
+      "online"
+    ]
+  }
+}

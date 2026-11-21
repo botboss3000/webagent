@@ -1,0 +1,34 @@
+{
+  "name": "remember_automation_state",
+  "description": "Remember state for the automation that started this run; the server supplies its automation and occurrence. Uses revision checks.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "memory": {}
+    },
+    "required": [
+      "expected_revision",
+      "memory"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "remember where the automation left off",
+      "store automation state"
+    ],
+    "keywords": [
+      "automation state"
+    ]
+  }
+}

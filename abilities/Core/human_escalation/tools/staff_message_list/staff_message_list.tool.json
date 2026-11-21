@@ -1,0 +1,42 @@
+{
+  "name": "staff_message_list",
+  "description": "Staff only. List the newest visitor messages, optionally filtered by status.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "new",
+          "contacted",
+          "resolved",
+          "closed"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "list visitor messages for staff"
+    ],
+    "keywords": [
+      "staff messages"
+    ]
+  }
+}

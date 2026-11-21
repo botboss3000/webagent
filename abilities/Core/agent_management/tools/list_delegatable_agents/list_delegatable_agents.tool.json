@@ -1,0 +1,28 @@
+{
+  "name": "list_delegatable_agents",
+  "description": "List accessible private agents you can delegate to with start_session or delegate_to_agent; reports whether a Standard model is assigned.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which agents can I delegate to",
+      "list agents for a handoff"
+    ],
+    "keywords": [
+      "delegate"
+    ]
+  }
+}

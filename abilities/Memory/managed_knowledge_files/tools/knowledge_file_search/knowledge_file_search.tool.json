@@ -1,0 +1,41 @@
+{
+  "name": "knowledge_file_search",
+  "description": "Search this agent's knowledge files by words and return the best-matching files with short excerpts. Use before answering questions about the business.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "maximum": 10,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "maxLength": 200,
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "search the knowledge base",
+      "look up our opening hours in the docs"
+    ],
+    "keywords": [
+      "knowledge",
+      "faq"
+    ]
+  }
+}

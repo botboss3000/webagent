@@ -1,0 +1,148 @@
+/* Chat message parts: the agent component panel, the per-bubble "more" menu and the
+   connection-lost and pending (outbox) notices. Turns, Markdown and the zoom chip have
+   their own stylesheets beside this one. */
+
+/* ── Agent component panel (CHAT-COMPONENT-PANEL / CHAT-COMPONENT-FULL-VIEW) ──
+   The single surface for declarative chat components (present_chat_component).
+   FULL VIEW is its only open state: the panel itself becomes a fixed,
+   panel-relative overlay anchored to the chat panel's bottom edge. It uses 75%
+   of the chat panel's measured height, as wide as the transcript content width.
+   The composer paints above this element so it remains continuously usable.
+   Geometry is measured in JS (_positionFullView in chat-components.js).
+   There is intentionally no transparent wrapper around this surface. */
+.chat-bubble {
+    padding: var(--chat-bubble-padding-y, 10px) var(--chat-bubble-padding-x, 14px);
+    border-radius: 12px;
+    font-size: var(--chat-bubble-font-size, 17px);
+    line-height: 1.5;
+    max-width: 90%;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    flex-shrink: 0;
+    cursor: text; /* message text reads as selectable text, not clickable UI */
+  }
+.chat-bubble a { cursor: text; }
+/* Relative timestamp in the bubble-actions row — "5m", "1h 13m", etc.
+   Small text, sits at the left of the footer. The auto-margin that pushes the
+   action buttons to the right lives on the model tag when present, else here
+   (see the :has() rules below). */
+.bubble-time {
+  font-size: 11px;
+  color: var(--fg-3);
+  opacity: 0.7;
+  user-select: none;
+  pointer-events: none;
+  line-height: 1;
+  align-self: center;
+}
+.chat-bubble.user {
+    background: rgba(var(--brand-rgb), 0.08);
+    border: 1px solid rgba(var(--brand-rgb), 0.19);
+    color: var(--fg-1);
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+  }
+
+/* ── Per-bubble "more" menu (⋮) ────────────────────────────────────────────
+   Popover from the footer's three-dot button (chat-bubble-actions.js
+   _openBubbleMoreMenu). Its Context row mirrors the pill's ctx readout
+   (chat-activity.js _renderCtxIndicator) — same values, both themes. */
+.bubble-more-menu {
+  position: fixed;
+  z-index: 5000;
+  min-width: 230px;
+  max-width: 340px;
+  background: var(--bg-elev);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  user-select: none;
+}
+.bubble-more-title {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  padding: 4px 8px 2px;
+}
+.bubble-more-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.bubble-more-row:hover {
+  background: rgba(var(--ink-rgb), 0.05);
+}
+.bubble-more-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-3);
+}
+.bubble-more-label i {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+.bubble-more-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+}
+.bubble-more-value .chat-token-label,
+.bubble-more-value .chat-ctx-sep {
+  color: var(--fg-3);
+}
+.chat-bubble.interrupted {
+    border: 1px solid var(--warning);
+    color: var(--warning);
+    align-self: flex-start;
+    font-style: italic;
+  }
+
+/* ── Connection lost (5-min timeout) — user-facing notice that the server
+     is unreachable, shown after 5 minutes of disconnection. */
+.chat-bubble.connection-lost-global {
+  align-self: flex-start;
+  border: 1px solid var(--danger, #cf222e);
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--danger, #cf222e) 8%, transparent);
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* ── Pending (outbox) bubble — message queued locally because the server
+     was unreachable. Retry and dismiss buttons appear in the action bar. */
+.chat-bubble.user.pending {
+  border: 1px dashed var(--warning);
+  background: rgba(var(--warning-rgb), 0.03);
+}
+.chat-bubble.user.pending .label {
+  color: var(--warning);
+}
+.chat-bubble.user.pending .label::after {
+  content: ' ⏳';
+  font-size: 11px;
+}
+.chat-bubble.user.saved { border-color: var(--success, #35b36b); }
+.chat-bubble.user.saved .label { color: var(--success, #35b36b); }
+/* Light mode adjustments — a stronger warm fill than the base 3% tint. */
+body.light-mode .chat-bubble.user.pending {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+body.light-mode .chat-bubble.user.pending .label {
+  color: var(--warning);
+}

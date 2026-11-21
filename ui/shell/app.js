@@ -1,0 +1,1102 @@
+import {createBackgroundIssues} from './background-issues/background-issues.js';
+import {createAbilityDrift,abilityDriftView} from './ability-drift/ability-drift.js';
+import {requestTouchVibration} from '../shared/vibrate/vibrate.js';
+// Port of V2 private-access shell; authentication remains exclusively V3.
+const privateResponse=await fetch('/ui/private-access/private-access-page/private-access-page.html');
+if(!privateResponse.ok)throw Error('Private access page failed to load');
+document.getElementById('app-restricted-overlay').innerHTML=await privateResponse.text();
+const privateHost=document.querySelector('[data-private-access-form]');
+const privateReveal=document.querySelector('[data-private-access-reveal]');
+privateReveal.onclick=()=>{privateHost.hidden=false;privateReveal.hidden=true;privateReveal.setAttribute('aria-expanded','true');document.getElementById('login-username').focus({preventScroll:true});};
+function privateVisible(visible){document.body.classList.toggle('app-restricted',visible);document.getElementById('app-restricted-overlay').setAttribute('aria-hidden',String(!visible));privateHost.hidden=true;privateReveal.hidden=false;privateReveal.setAttribute('aria-expanded','false');}
+import { initHeaderCarousel } from './header-carousel/header-carousel.js';
+import { idlePaused } from '../chat/core/idle-pause.js';
+import { clearConversations } from '../chat/core/conversation-cache.js';
+initHeaderCarousel();
+import { holdTabScroll, wirePageTabCarousel, wirePageTabDrag } from '../shared/page-tabs/page-tabs.js';
+import { consumeBack, pushBackHandler } from '../shared/history-back/history-back.js';
+import { purgeAllBrowserData } from '../browser-data-reset.js';
+import { showNotification } from '../chat/core/chat-action-panel.js';
+import { createFloatingChat,createChatLauncher } from '../chat/widget/window.js';
+import { mountNativeWidget } from '../chat/widget/native.js';
+import { authorizeEmbedPopup } from '../embed/authorize.js';
+import { mountChatResize } from '../chat/chat-resize/chat-resize.js';
+import { initChatConfig } from '../chat/controls/chat-config.js';
+import { mountChatPanel } from '../chat/core/panel.js';
+import { openSignInPanel } from '../chat/core/sign-in-panel.js';
+import { showLeftOverlay } from '../chat/controls/login-hook.js';
+
+// v2 dom-utils imports v1 auth and uploads; v3 uses text nodes and its own transport.
+import { renderIdentity } from '../main-panel/agents/pages/identity/page.js';
+import {renderMembers} from '../main-panel/agents/pages/members/page.js';
+import {renderArtifacts} from '../main-panel/agents/pages/artifacts/page.js';
+import {offerAccessRequest,showAccessNotices} from '../main-panel/agents/request-access.js';
+import {renderCreateAgent} from '../main-panel/agents/pages/create/page.js';
+import {createAgentArchive} from '../main-panel/agents/agent-archive.js';
+import { renderAbilities } from '../main-panel/agents/pages/abilities/page.js';
+import { loadAgentPages } from '../main-panel/agents/pages/catalog.js';
+import { renderAgentDirectory } from '../main-panel/agents/pages/config/page.js';
+import { mountSelectionTable } from '../main-panel/agents/pages/model/page.js';
+import { mountSessionsPage } from '../main-panel/agents/pages/sessions/page.js';
+import { mountAvailableModels } from '../main-panel/account/available-models.js';
+let availableModelsDispose;
+let selectionTable;
+let agentSelectionQueue=Promise.resolve();
+let sessionsPage=null,sessionsGeneration=0;
+// Accept the original bookmark scope, then normalize it to the Sessions route.
+let sessionsScope=['sessions','all'].includes(new URL(location.href).searchParams.get('agentScope'));
+let createScope=new URL(location.href).searchParams.get('agentScope')==='create';
+let agentPages=[];
+let configPage;
+let sessionsDescriptor;
+let createDescriptor;
+const $=id=>document.getElementById(id);
+let agentId=new URL(location.href).searchParams.get('agent')||'shared_default';
+let agentRoster=[];
+let accessNoticePoll=null;
+let agentArchive=null;
+let explicitAssignment=false;
+const initialTab=new URL(location.href).searchParams.get('tab');
+let agentModel='';
+async function mountAgents(){
+  const response=await fetch('/ui/main-panel/agents/agents-page.html',{credentials:'same-origin'});
+  if(!response.ok)throw Error('Agents page unavailable');
+  const template=document.createElement('template');
+  template.innerHTML=await response.text();
+  const grid=template.content.querySelector('#agents-grid');
+  if(!grid)throw Error('Agents page is incomplete');
+  grid.classList.remove('agents-phantom');
+  grid.classList.add('carousel');
+  grid.querySelector('.agents-phantom-detail')?.remove();
+  const squares=grid.querySelector('.agents-squares');
+  squares.replaceChildren();
+  const detail=document.createElement('div');
+  detail.className='agent-card active agent-card-tabs-only';
+  detail.innerHTML=`<div class="agent-card-tabs-wrap"><div class="agent-card-tabs" role="tablist" aria-label="Agent configuration pages"></div></div>
+    <div class="agent-detail-panel"><div class="agent-detail-content"><div class="agent-detail-body" id="model-page">
+    <h2>Model</h2><div class="ac-model-table">
+      <div class="ac-ability-row ac-model-cfg-row ac-row-static"><span class="ac-ability-label"><span class="ac-ability-name">Provider</span><span class="ac-ability-desc">Use a ChatGPT subscription for this agent.</span></span><span class="ac-model-cfg-control">ChatGPT Subscription</span></div>
+      <div class="ac-ability-row ac-model-cfg-row ac-row-static"><span class="ac-ability-label"><span class="ac-ability-name">Connection</span></span><span class="ac-model-cfg-control"><span id="connection" class="ac-hint"></span><button id="connect" type="button" class="ac-btn ac-btn-primary ac-btn-sm">Click to Issue verification code</button><button id="disconnect" type="button" class="ac-btn ac-btn-sm">Disconnect</button><span id="device" class="ac-subscription-auth"></span></span></div>
+      <form id="model-form" class="ac-ability-row ac-model-cfg-row"><label for="model" class="ac-ability-label"><span class="ac-ability-name">Model</span><span class="ac-ability-desc">Model ID used for new chat turns.</span></label><span class="ac-model-cfg-control"><input id="model" class="ac-input ac-input-sm" placeholder="gpt-6-luna" required pattern="[A-Za-z0-9._-]+"><button class="ac-btn ac-btn-primary ac-btn-sm">Save model</button></span></form>
+    </div>
+    </div><div id="identity-page" class="agent-detail-body" hidden></div><div id="abilities-page" hidden></div><div id="members-page" class="agent-detail-body" hidden></div><div id="artifacts-page" class="agent-detail-body" hidden></div><div id="config-page" class="agent-detail-body" hidden></div></div></div>`;
+  const pages=await loadAgentPages();
+  configPage=pages.find(page=>page.type==='directory');
+  sessionsDescriptor=pages.find(page=>page.type==='sessions');
+  createDescriptor=pages.find(page=>page.type==='create');
+  agentPages=pages.filter(page=>page.type==='agent_configuration');
+  const tabs=detail.querySelector('.agent-card-tabs');
+  for(const page of [configPage,...agentPages]){
+    const tab=document.createElement('button');
+    tab.id='agent-tab-'+page.id;tab.type='button';tab.textContent=page.title;
+    tab.onclick=guard(()=>showAgentView(page.id));
+    tab.setAttribute('role','tab');tab.setAttribute('aria-controls',page.panelId);
+    tab.setAttribute('aria-selected','false');
+    tabs.append(tab);
+    const body=detail.querySelector('#'+page.panelId);
+    if(!body)throw Error('Agent page panel unavailable: '+page.id);
+    body.setAttribute('role','tabpanel');body.setAttribute('aria-labelledby',tab.id);
+  }
+  const selectionHost=document.createElement('div');selectionHost.id='selection-model-table';detail.querySelector('#model-page h2').after(selectionHost);
+  detail.querySelector('#model-page h2').textContent=agentPages.find(page=>page.id==='model').title;
+  const panel=detail.querySelector('.agent-detail-panel');
+  panel.remove();
+  const region=document.createElement('div');
+  region.id='agents-detail-region';
+  region.className='open';
+  const detailRow=document.createElement('div');
+  detailRow.className='agent-row';
+  detailRow.dataset.agentId=agentId;
+  detailRow.append(detail,panel);
+  region.append(detailRow);
+  grid.append(region);
+  const common=document.createElement('div');common.id='sessions-region';common.className='open';common.hidden=true;
+  common.innerHTML='<div class="agent-row expanded agent-row-sessions"><div class="agent-card active agent-card-tabs-only"><div class="agent-card-tabs-wrap"><div class="agent-card-tabs" role="tablist" aria-label="Sessions pages"><button id="sessions-page-tab" type="button" role="tab" class="active" aria-selected="true" aria-controls="sessions-section">Sessions</button></div></div></div><div class="agent-detail-panel"><div class="agent-detail-content"><section id="sessions-section" role="tabpanel" aria-labelledby="sessions-page-tab"></section></div></div></div>';
+  common.querySelector('#sessions-page-tab').textContent=sessionsDescriptor.title;
+  common.querySelector('#sessions-page-tab').setAttribute('aria-controls',sessionsDescriptor.panelId);
+  grid.append(common);
+  // Creation is caller-scoped like Sessions: it never edits the selected agent.
+  const create=document.createElement('div');create.id='create-region';create.className='open';create.hidden=true;
+  create.innerHTML='<div class="agent-row expanded"><div class="agent-card active agent-card-tabs-only"><div class="agent-card-tabs-wrap"><div class="agent-card-tabs" role="tablist" aria-label="New agent pages"><button id="create-page-tab" type="button" role="tab" class="active" aria-selected="true"></button></div></div></div><div class="agent-detail-panel"><div class="agent-detail-content"><section class="agent-detail-body" role="tabpanel" aria-labelledby="create-page-tab"></section></div></div></div>';
+  create.querySelector('#create-page-tab').textContent=createDescriptor.title;
+  create.querySelector('#create-page-tab').setAttribute('aria-controls',createDescriptor.panelId);
+  create.querySelector('section').id=createDescriptor.panelId;
+  grid.append(create);
+  const css=document.createElement('link');css.rel='stylesheet';css.href='/ui/main-panel/agents/pages/sessions/sessions.css';document.head.append(css);
+  $('agents-grid').replaceWith(grid);
+  // The shared CSS fades and shows a chevron at each edge with hidden squares; these classes drive it.
+  const strip=grid.querySelector('.agents-squares-wrap'),edges=()=>{
+    strip.classList.toggle('can-scroll-left',squares.scrollLeft>1);
+    strip.classList.toggle('can-scroll-right',squares.scrollLeft+squares.clientWidth<squares.scrollWidth-1);
+  };
+  squares.addEventListener('scroll',edges,{passive:true});
+  new ResizeObserver(edges).observe(squares);new MutationObserver(edges).observe(squares,{childList:true});
+  for(const [side,sign] of [['left',-1],['right',1]])strip.querySelector('.agents-carousel-chev.'+side).onclick=()=>squares.scrollBy({left:sign*squares.clientWidth*0.8,behavior:'smooth'});
+  agentArchive=createAgentArchive({grid,request:api,roster:()=>agentRoster,rerender:()=>renderAgentCards(),notify:note,onChanged:agentsArchived,canUseArchive:()=>accountMe?.role!=='guest'});
+  const route=new URL(location.href);
+  if(activeMainPage==='agents'){
+    route.searchParams.set('tab','agents');
+    route.searchParams.set('agent',agentId);
+    history.replaceState({},'',route);
+  }
+  bindAgentPageControls();
+}
+// Caller-scoped discovery; configuration selection never rebinds an open chat.
+function renderAgentCards(){
+  const squares=document.querySelector('#agents-grid .agents-squares');
+  // The agents page loads on demand; there is nothing to redraw before then.
+  if(!squares)return;
+  squares.replaceChildren();
+  if(agentArchive?.open){agentArchive.render(squares);return;}
+  const common=document.createElement('div');common.className='agent-row';
+  common.innerHTML='<button type="button" class="agent-card agent-square" aria-label="Sessions"><div class="agent-card-top"><div class="agent-card-icon-wrap color-purple">'+ '<i data-lucide="messages-square"></i>'+'</div><div class="agent-card-meta"><div class="agent-card-name-row"><span class="agent-card-name">Sessions</span></div></div></div></button>';
+  common.firstElementChild.setAttribute('aria-label',sessionsDescriptor.title);
+  common.querySelector('.agent-card-name').textContent=sessionsDescriptor.title;
+  common.firstElementChild.classList.toggle('activated',sessionsScope);common.firstElementChild.setAttribute('aria-pressed',String(sessionsScope));
+  common.firstElementChild.onclick=guard(()=>showSessions());squares.append(common);
+  if(accountMe?.role!=='guest'){
+    const create=document.createElement('div');create.className='agent-row';
+    create.innerHTML='<button type="button" class="agent-card agent-square"><div class="agent-card-top"><div class="agent-card-icon-wrap color-purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></div><div class="agent-card-meta"><div class="agent-card-name-row"><span class="agent-card-name"></span></div></div></div></button>';
+    const button=create.firstElementChild;button.setAttribute('aria-label',createDescriptor.title);button.querySelector('.agent-card-name').textContent=createDescriptor.title;
+    button.classList.toggle('activated',createScope);button.setAttribute('aria-pressed',String(createScope));
+    button.onclick=guard(()=>showCreateAgent());squares.append(create);
+  }
+  for(const agent of agentRoster){
+    const row=document.createElement('div');row.className='agent-row';row.dataset.agentId=agent.id;
+    row.innerHTML='<div class="agent-card agent-square activated"><div class="agent-card-top"><div class="agent-card-icon-wrap color-purple"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="12" cy="12" r="3"/></svg></div><div class="agent-card-meta"><div class="agent-card-name-row"><span class="agent-card-name">WebAgent</span><span class="agent-status-dot"></span></div></div></div></div>';
+    const card=row.firstElementChild;
+    card.classList.toggle('activated',!sessionsScope&&!createScope&&agent.id===agentId);
+    card.setAttribute('role','button');card.tabIndex=0;
+    card.setAttribute('aria-label','Configure '+(agent.name||agent.id));
+    card.setAttribute('aria-pressed',String(!sessionsScope&&!createScope&&agent.id===agentId));
+    card.querySelector('.agent-card-name').textContent=agent.name||agent.id;
+    card.querySelector('.agent-status-dot')?.remove();
+    if(agent.description)card.title=agent.description;
+    const select=guard(()=>{
+      // Serialize remounts so rapid card clicks cannot retain another agent's handlers.
+      agentSelectionQueue=agentSelectionQueue.catch(()=>{}).then(()=>selectAgent(agent.id));
+      return agentSelectionQueue;
+    });
+    card.onclick=select;
+    card.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select();}};
+    agentArchive?.decorate(row,agent);
+    squares.append(row);
+  }
+  if(!agentRoster.length){const empty=document.createElement('p');empty.textContent='No agents are available to this account.';squares.append(empty);}
+  document.querySelector('#agents-detail-region .agent-row').dataset.agentId=agentId;
+  agentArchive?.sync();
+}
+// A removed or deleted selection moves to a remaining agent first, so the reload reads as deliberate.
+async function agentsArchived(ids,verb){
+  if(['removed','deleted'].includes(verb)&&ids.includes(agentId)){
+    const rest=agentRoster.filter(agent=>!ids.includes(agent.id));
+    const next=(rest.find(agent=>agent.id==='shared_default')||rest[0])?.id;
+    if(next&&!sessionsScope&&!createScope)await selectAgent(next);
+    else if(next){agentId=next;const route=new URL(location.href);route.searchParams.set('agent',next);history.replaceState({},'',route);}
+  }
+  await loadAgentRoster();
+}
+async function loadAgentRoster(){
+  const data=await api('/models/agents');
+  if(!Array.isArray(data.agents))throw Error('Agent list unavailable');
+  agentRoster=data.agents;
+  // An explicit link to an agent this account cannot use offers an access request.
+  if(new URL(location.href).searchParams.has('agent')&&!agentRoster.some(agent=>agent.id===agentId)&&accountMe)void offerAccessRequest(api,agentId,{guest:accountMe.role==='guest'});
+  if(agentRoster.length&&!agentRoster.some(agent=>agent.id===agentId)){
+    agentId=(agentRoster.find(agent=>agent.id==='shared_default')||agentRoster[0]).id;
+    const route=new URL(location.href);route.searchParams.set('agent',agentId);history.replaceState({},'',route);
+    note('Requested agent is unavailable. Showing an available agent.');
+  }
+  renderAgentCards();
+}
+let mainPages=[];
+// Main pages only administrators see; their APIs enforce this too.
+const adminPages=['builds','host-admin'];
+// Lucide names for the mobile sidebar; pages without an entry use a plain square.
+const mobileNavIcons={app:'layout-grid',agents:'bot',account:'user-cog',builds:'hammer',notifications:'bell','session-metrics':'chart-line',wiki:'book-open'};
+let activeMainPage='';
+const protectedPageStarts=new Map();
+const protectedAsset=path=>typeof path==='string'&&path.startsWith('/api/v3/modules/');
+function startProtectedPage(page){
+  if(!accountMe||!page||!protectedAsset(page.entry)||protectedPageStarts.has(page.id))return;
+  const mount=$('tab-'+page.id);
+  // Optional package assets require authentication. A rejected import must not
+  // abort the shell before sign-in, or hide unrelated pages after sign-in.
+  const pending=(async()=>{
+    for(const href of page.css||[]){
+      if(!protectedAsset(href))continue;
+      const link=document.createElement('link');link.rel='stylesheet';link.href=href;
+      document.head.insertBefore(link,document.querySelector('link[href^="/ui/shell/app.css"]'));
+    }
+    if(protectedAsset(page.html)){
+      const response=await fetch(page.html,{credentials:'same-origin'});
+      if(!response.ok)throw Error(page.label+' page unavailable');
+      mount.innerHTML=await response.text();
+    }
+    const module=await import(page.entry);
+    if(typeof module.start!=='function')throw Error(page.label+' page has no start function');
+    await module.start(mount);
+  })().catch(error=>{
+    mount.textContent=page.label+' could not load: '+error.message;
+    protectedPageStarts.delete(page.id);
+  });
+  protectedPageStarts.set(page.id,pending);
+}
+async function loadMainPages(){
+  const response=await fetch('/api/v3/pages/catalog',{credentials:'same-origin',cache:'no-store'});
+  if(!response.ok)throw Error('Main page catalog unavailable');
+  const catalog=await response.json();
+  if(!Array.isArray(catalog.main)||!catalog.main.length)throw Error('No main pages configured');
+  mainPages=catalog.main;
+  activeMainPage=mainPages.some(page=>page.id===initialTab)?initialTab:mainPages[0].id;
+  for(const page of mainPages){
+    for(const href of page.css||[]){
+      if(protectedAsset(href))continue;
+      const link=document.createElement('link');
+      link.rel='stylesheet';link.href=href;
+      document.head.insertBefore(link,document.querySelector('link[href^="/ui/shell/app.css"]'));
+    }
+    const tab=document.createElement('button');
+    tab.id='tab-button-'+page.id;tab.type='button';tab.className='main-tab';
+    tab.dataset.value=page.id;tab.setAttribute('role','tab');tab.textContent=page.label;
+    tab.onclick=()=>showMainPage(page.id);
+    $('main-tabs').append(tab);
+    const option=document.createElement('option');
+    option.value=page.id;option.textContent=page.label;
+    $('main-tab-select').append(option);
+    const mobile=document.createElement('button');
+    mobile.id='mobile-nav-'+page.id;mobile.type='button';mobile.className='mobile-nav-item';
+    const icon=document.createElement('i');icon.className='lucide-icon';icon.dataset.lucide=mobileNavIcons[page.id]||'square';
+    const label=document.createElement('span');label.textContent=page.label;
+    mobile.append(icon,label);mobile.onclick=()=>showMainPage(page.id);
+    $('mobile-nav-items').append(mobile);
+    window.lucide?.createIcons();
+    const mount=document.createElement('div');
+    mount.id='tab-'+page.id;mount.className='tab-content';mount.hidden=page.id!==activeMainPage;
+    $('main-panel').append(mount);
+  }
+  updateMainPageState();
+}
+// Main pages load on first navigation; startup only builds their empty mounts.
+const mainPageLoads=new Map();
+async function ensureMainPage(id){
+  const page=mainPages.find(item=>item.id===id);
+  if(!page)return;
+  if(mainPageLoads.has(id))return mainPageLoads.get(id);
+  const mount=$('tab-'+id);
+  const pending=(async()=>{
+    if(page.html&&!protectedAsset(page.html)){
+      const partial=await fetch(page.html,{credentials:'same-origin'});
+      if(!partial.ok)throw Error(page.label+' page unavailable');
+      mount.innerHTML=await partial.text();
+    }
+    if(page.id==='account'){bindAccountPageControls();if(accountMe)renderAccount(accountMe);}
+    if(page.id==='agents'){
+      await mountAgents();
+      syncAgentTabs();renderAgentCards();wireAgentTabStrip();
+      if(agentRoster.length)void syncAgentModels();
+      if(sessionsScope)await showSessions('replace');
+      else if(createScope&&accountMe?.role!=='guest')await showCreateAgent('replace');
+    }
+    if(page.entry&&!protectedAsset(page.entry)){
+      const module=await import(page.entry);
+      if(typeof module.start!=='function')throw Error(page.label+' page has no start function');
+      await module.start(mount);
+    }
+    startProtectedPage(page);
+  })().catch(error=>{
+    mainPageLoads.delete(id);
+    mount.textContent=page.label+' could not load: '+error.message;
+    note(page.label+' could not load: '+error.message);
+    throw error;
+  });
+  mainPageLoads.set(id,pending);
+  return pending;
+}
+// Wiki links in chat replies open the article in the Wiki tab beside the chat.
+document.addEventListener('webagent:wiki-open',event=>{
+  if(!mainPages.some(page=>page.id==='wiki'))return;
+  event.preventDefault();showMainPage('wiki');
+  document.dispatchEvent(new CustomEvent('webagent:wiki-show',{detail:{slug:event.detail.slug}}));
+});
+function updateMainPageState(){
+  for(const page of mainPages){
+    const selected=page.id===activeMainPage;
+    $('tab-'+page.id).hidden=!selected;
+    $('tab-'+page.id).classList.toggle('active',selected);
+    $('tab-button-'+page.id).classList.toggle('active',selected);
+    $('tab-button-'+page.id).setAttribute('aria-selected',String(selected));
+  }
+  $('main-tab-select').value=activeMainPage;
+}
+let csrf='',state={},poll;
+const ids=new Map();
+const keyId=key=>{if(!ids.has(key))ids.set(key,crypto.randomUUID());return ids.get(key);};
+let noticeSource='',actionNotice='',backgroundNotices=[];
+// Shown for transport and gateway failures; the next server response clears it.
+const OFFLINE="Can't reach the server. Retrying automatically.";
+const paintNotices=()=>{$('notice').textContent=[actionNotice,...backgroundNotices].filter(Boolean).join(' · ');};
+const issues=createBackgroundIssues({request:(...args)=>api(...args),render:messages=>{backgroundNotices=messages;paintNotices();},paused:idlePaused});
+const note=(text,source='')=>{
+  const visibleText=(text==='Sign in required'||text==='Guest access is not enabled')?'':text;
+  actionNotice=visibleText;paintNotices();
+  noticeSource=visibleText?(source||(visibleText.endsWith(OFFLINE)?'network':'')):'';
+};
+const clearNoticeFrom=source=>{if(noticeSource===source)note('');};
+async function api(path,method='GET',body){let response;try{response=await fetch('/api/v3'+path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json',...(method==='GET'?{}:{'x-csrf-token':csrf})},...(body===undefined?{}:{body:JSON.stringify(body)})});}catch{throw Error(OFFLINE);}const data=await response.json().catch(()=>({}));const gateway=response.status>=502&&!data.error&&!data.message;if(!gateway)clearNoticeFrom('network');if(!response.ok){if(response.status===401&&path!=='/auth/login')out();const error=Error(data.error||data.message||(gateway?OFFLINE:'Request failed ('+response.status+')'));error.status=response.status;throw error;}return data;}
+const guard=fn=>async event=>{event?.preventDefault();try{await fn(event);note('');}catch(error){note(error.message);}};
+// The chat panel mounts on first use; the shell, sessions page and widget talk to this facade until then.
+let chatPanel=null,mountingChat=null;
+async function ensureChat(){
+  if(chatPanel)return chatPanel;
+  if(!mountingChat)mountingChat=mountChatPanel({request:api, guard, note, clearNoticeFrom, issues, keyId, forgetKey:key=>ids.delete(key), refresh, getState:()=>state, getAgentId:()=>agentId, getIdentity:()=>accountMe, onLogin:()=>openSignInPanel({agent:agentRoster.find(agent=>agent.id===agentId)?.name||'WebAgent',message:'Sign in with your WebAgent account to use your access to this agent. Your current session ends first.',identity:accountMe?(accountMe.role==='guest'?'Guest':accountMe.user):'',signIn:guard(async()=>{await signOut();showLeftOverlay();}),guest:null})}).then(panel=>{chatPanel=panel;widget?.configure();return panel;}).catch(error=>{mountingChat=null;throw error;});
+  return mountingChat;
+}
+const live=(name,args)=>ensureChat().then(panel=>panel[name](...args));
+const chat={
+  ensure:ensureChat,
+  get sessionId(){return chatPanel?.sessionId||'';},
+  get mounted(){return !!chatPanel;},
+  open:(...args)=>live('open',args),
+  sessions:(...args)=>live('sessions',args),
+  newSession:(...args)=>live('newSession',args),
+  showSessions:(...args)=>live('showSessions',args),
+  send:(...args)=>live('send',args),
+  stop:(...args)=>live('stop',args),
+  approve:(...args)=>live('approve',args),
+  recover:(...args)=>live('recover',args),
+  setDraft:(...args)=>live('setDraft',args),
+  setElementContext:(...args)=>{if(!chatPanel)return;return chatPanel.setElementContext(...args);},
+  runs:(...args)=>{if(!chatPanel)return;return chatPanel.runs(...args);},
+  disconnect:(...args)=>{if(!chatPanel)return;return chatPanel.disconnect(...args);}
+};
+// Mounts the panel and opens the requested conversation, else the newest one.
+async function openChatNow(){
+  await ensureChat();
+  const requested=new URL(location.href).searchParams.get('session_id');
+  if(requested){
+    if(chat.sessionId===requested)return;
+    try{await chat.open(requested,'replace');return;}catch(error){
+      if(!/not found/i.test(error.message||'')){note('Conversation unavailable: '+error.message);return;}
+      // Shown in the chat panel, not the app-wide notice bar. A wrong, deleted or no-longer-shared
+      // conversation all answer "not found", so the wording covers each without guessing.
+      showNotification({key:'conversation-unavailable',title:'Conversation unavailable',
+        message:'Not found, or you do not have access to it.'});
+      // A deleted or unknown conversation must not stay in the address: reloads would reopen it.
+      const url=new URL(location.href);url.searchParams.delete('session_id');history.replaceState(history.state,'',url);
+    }
+  }
+  if(chat.sessionId&&chat.sessionId!==requested)return;
+  let items=[];
+  try{items=await chat.sessions();}catch(error){note(error.message);return;}
+  if(items.length)try{await chat.open(items[0].id,'replace');}catch(error){note('Conversation unavailable: '+error.message);}
+}
+let chatOpenPromise=null;
+function openChatSurface(){
+  if(!chatOpenPromise)chatOpenPromise=openChatNow().finally(()=>{chatOpenPromise=null;});
+  return chatOpenPromise;
+}
+await loadMainPages();
+
+function disposeSessionsPage(){++sessionsGeneration;sessionsPage?.destroy();sessionsPage=null;$('tab-agents').classList.remove('sessions-view');}
+async function showSessions(routeMode='push'){
+  if(activeMainPage!=='agents')return;
+  sessionsScope=true;createScope=false;$('tab-agents').classList.add('sessions-view');$('agents-detail-region').hidden=true;$('create-region').hidden=true;$('sessions-region').hidden=false;renderAgentCards();
+  const route=new URL(location.href);route.searchParams.set('tab','agents');route.searchParams.set('agentScope','sessions');route.searchParams.set('agentView','sessions');
+  if(route.href!==location.href)history[routeMode==='replace'?'replaceState':'pushState']({},'',route);
+  if(sessionsPage||activeMainPage!=='agents')return;
+  const generation=++sessionsGeneration;
+  const mounted=await mountSessionsPage($('sessions-section'),{request:api,userId:accountMe?.user_id||accountMe?.user,roster:agentRoster,getSessionId:()=>chat.sessionId,isCurrent:()=>generation===sessionsGeneration&&sessionsScope&&activeMainPage==='agents',
+    open:async id=>{await chat.open(id);if(mobileLayout.matches)showMobileView('chat');},
+    changed:()=>{window.dispatchEvent(new Event('v3:sessions-changed'));void chat.sessions().catch(()=>{});}});
+  if(generation===sessionsGeneration)sessionsPage=mounted;else mounted?.destroy();
+}
+// The form survives scope switches; a created agent opens on the page it needs next.
+async function showCreateAgent(routeMode='push'){
+  if(activeMainPage!=='agents')return;
+  if(accountMe?.role==='guest'){createScope=false;await showAgentView('config',routeMode);return;}
+  disposeSessionsPage();sessionsScope=false;createScope=true;
+  $('agents-detail-region').hidden=true;$('sessions-region').hidden=true;$('create-region').hidden=false;renderAgentCards();
+  const route=new URL(location.href);route.searchParams.set('tab','agents');route.searchParams.set('agentScope','create');route.searchParams.set('agentView','create');
+  if(route.href!==location.href)history[routeMode==='replace'?'replaceState':'pushState']({},'',route);
+  const host=$(createDescriptor.panelId);
+  if(!host.firstChild)renderCreateAgent(host,api,{onCreated:async created=>{
+    await loadAgentRoster();
+    const next=new URL(location.href);next.searchParams.set('agentView',created.assignment_required?'model':'identity');history.replaceState({},'',next);
+    await selectAgent(created.id);
+  }});
+}
+// Agent pages resolve tenant authority independently; members see effective read-only abilities.
+async function showAgentView(view,routeMode='push'){
+  if(sessionsScope){await showSessions(routeMode);return;}
+  if(createScope){await showCreateAgent(routeMode);return;}
+  disposeSessionsPage();$('sessions-region').hidden=true;$('create-region').hidden=true;
+  const restoreScroll=holdTabScroll(document.querySelector('#agents-detail-region .agent-card.active'));
+  try{await renderAgentView(view,routeMode,restoreScroll);}finally{restoreScroll();}
+}
+async function renderAgentView(view,routeMode,restoreScroll){
+  const pages=[configPage,...agentPages];
+  const canManage=agentRoster.find(agent=>agent.id===agentId)?.can_manage===true;
+  // Operator pages (catalog "operator": true) stay hidden from members and visitors.
+  const allowed=page=>canManage||!page.operator;
+  const selected=!canManage&&!pages.some(page=>page.id===view&&allowed(page)&&page.type!=='directory')?'artifacts':pages.some(page=>page.id===view)?view:'config';
+  for(const page of pages){
+    $(page.panelId).hidden=page.id!==selected;
+    const tab=$('agent-tab-'+page.id);
+    tab.setAttribute('aria-selected',String(page.id===selected));
+    tab.classList.toggle('active',page.id===selected);
+    tab.hidden=(!agentTabOrder.includes(page.id)&&page.id!==selected)||!allowed(page);
+    tab.classList.toggle('ephemeral',!agentTabOrder.includes(page.id)&&page.id===selected);
+    if(!tab.hidden&&!agentTabOrder.includes(page.id))tab.parentElement.append(tab);
+  }
+  const route=new URL(location.href);
+  route.searchParams.set('agentView',selected);
+  if(route.href!==location.href)history[routeMode==='replace'?'replaceState':'pushState']({},'',route);
+  restoreScroll(false);
+  if(selected==='identity')await renderIdentity($('identity-page'),api,{agentId,onSaved:agent=>{const saved=agentRoster.find(item=>item.id===agentId);if(saved)saved.name=agent.name;renderAgentCards();}});
+  if(selected==='abilities')await renderAbilities($('abilities-page'),api,{agentId});
+  if(selected==='members')await renderMembers($('members-page'),api,{agentId});
+  if(selected==='artifacts')await renderArtifacts($('artifacts-page'),api,{agentId});
+}
+async function selectAgent(id){
+  if(!sessionsScope&&!createScope&&id===agentId){$('agents-detail-region').scrollIntoView({block:'start',behavior:'smooth'});return;}
+  sessionsScope=false;createScope=false;
+  disposeSessionsPage();
+  $('sessions-region').hidden=true;$('create-region').hidden=true;
+  $('agents-detail-region').hidden=false;
+  agentId=id;
+  const route=new URL(location.href);
+  route.searchParams.set('tab','agents');
+  route.searchParams.set('agent',id);
+  route.searchParams.delete('agentScope');
+  if(['sessions','create'].includes(route.searchParams.get('agentView')))route.searchParams.set('agentView','config');
+  history.pushState({},'',route);
+  renderAgentCards();
+  for(const page of [configPage,...agentPages])$(page.panelId).hidden=true;
+  // Rebind configuration handlers without remounting or reopening the conversation.
+  await Promise.all([
+    mountAgentModels(),
+    showAgentView(route.searchParams.get('agentView')||'config','replace')
+  ]);
+}
+// Agent cards mount lazily, so bind only tabs that already exist; mountAgents wires new ones.
+for(const page of [configPage,...agentPages]){
+  if(!page)continue;
+  const tab=$('agent-tab-'+page.id);if(tab)tab.onclick=guard(()=>showAgentView(page.id));
+}
+// Like V2, the favorite list is also the tab order; Config cannot be removed.
+let agentTabOrder=['config'];
+let agentTabsRevision=0;
+let agentTabsReady=false;
+let agentTabsGeneration=0;
+let agentTabsQueue=Promise.resolve();
+function applyAgentTabs(snapshot){
+  // agentPages fills in when the agents page mounts, often after favorites load,
+  // so filter only once the page list is known; until then keep every saved id.
+  const known=agentPages.length?new Set(['config',...agentPages.map(page=>page.id)]):null;
+  agentTabOrder=[...new Set(snapshot.page_ids||[])].filter(id=>!known||known.has(id));
+  if(!agentTabOrder.includes('config'))agentTabOrder.push('config');
+  agentTabsRevision=snapshot.revision;
+  syncAgentTabs();
+}
+async function loadAgentTabs(){
+  agentTabsGeneration++;
+  agentTabsReady=false;
+  const snapshot=await api('/user/agent-page-favorites');
+  applyAgentTabs(snapshot);
+  agentTabsReady=true;
+}
+function syncAgentTabs(){
+  const strip=document.querySelector('#agents-detail-region .agent-card-tabs');
+  // Favorites can land before the agents page mounts; the tab order is applied again on load.
+  if(!strip)return;
+  for(const id of agentTabOrder){const tab=$('agent-tab-'+id);if(tab)strip.append(tab);}
+  for(const page of [configPage,...agentPages])$('agent-tab-'+page.id).hidden=!agentTabOrder.includes(page.id);
+  renderAgentDirectory($('config-page'),agentPages,view=>guard(()=>showAgentView(view))(),agentTabOrder,id=>{
+    if(!agentTabsReady){note('Agent page preferences are unavailable. Reload to retry.');return;}
+    if(agentTabOrder.includes(id))agentTabOrder=agentTabOrder.filter(item=>item!==id);
+    else agentTabOrder.unshift(id);
+    saveAgentTabs();
+  });
+}
+function saveAgentTabs(){
+  syncAgentTabs();
+  const pages=agentTabOrder.slice(),user=accountMe?.user_id||accountMe?.user,generation=agentTabsGeneration;
+  const request=async()=>{
+    if(generation!==agentTabsGeneration||!agentTabsReady||user!==(accountMe?.user_id||accountMe?.user))return;
+    try{
+      const saved=await api('/user/agent-page-favorites','PUT',{page_ids:pages,expected_revision:agentTabsRevision});
+      agentTabsRevision=saved.revision;
+    }catch(error){
+      agentTabsReady=false;
+      note('Agent page favorites were not saved: '+error.message);
+      try{await loadAgentTabs();}catch{note('Agent page favorites could not be loaded. Reload to retry.');}
+    }
+  };
+  agentTabsQueue=agentTabsQueue.then(request,request);
+}
+
+syncAgentTabs();
+// The agents page mounts on first navigation, so its tab strip is wired when that page loads.
+function wireAgentTabStrip(){
+  const strip=document.querySelector('#agents-detail-region .agent-card-tabs');
+  if(!strip||strip.dataset.wired)return;
+  strip.dataset.wired='1';
+  wirePageTabCarousel(strip);
+  wirePageTabDrag(strip,{getOrder:()=>agentTabOrder,save:saveAgentTabs,prefix:'agent-tab-'});
+}
+async function loadGuestPolicy(){const approval=document.querySelector('.private-access-approval');approval.hidden=true;try{const policy=await api('/auth/access-mode');$('guest-login').hidden=!policy.guest_access;approval.hidden=policy.access_mode!=='admin_approval';}catch{$('guest-login').hidden=true;}}
+$('guest-login').onclick=async()=>{const btn=$('guest-login');btn.disabled=true;try{const result=await api('/auth/guest-login','POST',{});csrf=result.csrf_token;await boot();}catch(error){$('registration-status').textContent=error.message;}finally{btn.disabled=false;}};
+// Authentication loss is a state transition, not a refresh event. Late 401s
+// must not reset an open sign-in form or recursively refresh identity consumers.
+// Administrator popup for checkout ability changes that need a rebuild; other accounts never poll it.
+let abilityDrift=null;
+function abilityDriftFor(me){
+  if(!me?.is_admin){abilityDrift?.stop();abilityDrift=null;return;}
+  if(abilityDrift)return;
+  const view=abilityDriftView(document,remind=>abilityDrift?.dismiss(remind),requestTouchVibration,mode=>abilityDrift.rebuild(mode));
+  document.getElementById('ability-drift')?.remove();document.body.append(view.element);
+  abilityDrift=createAbilityDrift({request:api,render:view.render});abilityDrift.start();
+}
+// Signing out (or losing the session) also drops the browser's cached conversations.
+function out(){if(document.body.classList.contains('app-restricted'))return;void clearConversations();abilityDriftFor(null);issues.stop();disposeSessionsPage();widget?.hide();accountMe=null;agentTabsGeneration++;agentTabsReady=false;agentTabOrder=['config'];syncAgentTabs();availableModelsDispose?.();availableModelsDispose=null;window.dispatchEvent(new Event('v3-identity-changed'));loadGuestPolicy();csrf='';chat.disconnect();clearInterval(poll);clearInterval(accessNoticePoll);closeMobileNav();closeAccountMenu();$('app').hidden=true;privateVisible(true);window.__boot?.reveal();}
+async function refresh(){if(accountMe&&!accountMe.is_admin){state=await api('/user/status');$('shutoff').hidden=true;chat.runs(state.runs||[]);return;}state=await api('/status');agentModel=state.model||agentModel;
+// The agent settings widgets belong to the agents page, which loads on first navigation.
+if($('connection')){$('shutoff').querySelector('span').textContent=state.shutoff?'Execution shut off — enable':'Shut off execution';$('connection').textContent=state.provider?.connected?'Connected':'Connection required';$('connect').hidden=!!state.provider?.connected;$('disconnect').hidden=!state.provider?.connected;if(document.activeElement!==$('model'))$('model').value=agentModel||state.model||'';$('device').replaceChildren();const login=state.provider?.login;if(login?.verification_url){const link=document.createElement('a');link.href=login.verification_url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open ChatGPT authorization';const code=document.createElement('p');code.textContent='Code: '+login.user_code+' — '+(login.status||'Waiting');$('device').append(link,code);}}chat.runs(state.runs||[]);}
+// Explicit role administration replaces the legacy default-model form for every agent.
+// app-settings ui.mobile_mode.full_height toggles the mobile edge-to-edge shell (app.css).
+function applyMobileFullHeight(enabled){
+  document.body.classList.toggle('mobile-full-height',enabled===true);
+}
+async function boot(){
+  // Phase A: identity only; nothing else may delay the first transcript paint.
+  const me=await api('/auth/me');
+  csrf=me.csrf_token;
+  if(await authorizeEmbedPopup({request:api,me}))return;
+  renderAccount(me);issues.start();abilityDriftFor(me);
+  window.dispatchEvent(new Event('v3-identity-changed'));
+  privateVisible(false);
+  const requested=new URL(location.href).searchParams.get('session_id');
+  const chatFirst=!!requested&&initialTab!=='account';
+  if(chatFirst&&mobileLayout.matches)showMobileView('chat');
+  // Phase B: independent work starts now and applies as it lands.
+  void (async()=>{
+    let data=null;
+    try{data=await initChatConfig();}catch{}
+    if(!data){try{data=await api('/auth/ui-config');}catch{}}
+    if(data){
+      const panel=data.app_ui?.chat_panel||{width:45,unit:'%'};
+      applyMobileFullHeight(data.app_ui?.mobile_mode?.full_height===true);
+      desktopChatVisible=panel.width!==0;
+      if(!desktopChatVisible){mobileView='main';widget.hide();}
+      chatResize.configure(panel);
+    }
+    // The shell appears only when its first layout is resolved; defaults still reveal it if configuration never arrives.
+    $('app').hidden=false;
+    syncLayout();
+    window.__boot?.shellReady();
+  })();
+  void agentTabsQueue.then(()=>loadAgentTabs()).catch(()=>note('Agent page favorites could not be loaded. Reload to retry.'));
+  void loadAgentRoster().then(async()=>{
+    if(!agentRoster.length){
+      await ensureMainPage('agents').catch(()=>{});
+      if(sessionsScope)await showSessions('replace');
+      else if(accountMe?.role!=='guest')await showCreateAgent('replace');
+      return;
+    }
+    if(accountMe?.role!=='guest'){void showAccessNotices(api,agentRoster);clearInterval(accessNoticePoll);accessNoticePoll=setInterval(()=>void showAccessNotices(api,agentRoster),60000);}
+    if($('selection-model-table'))void syncAgentModels();
+  }).catch(error=>note('Agents unavailable: '+error.message));
+  void refresh().catch(error=>note(error.message));
+  const inviteToken=new URL(location.href).searchParams.get('chat_invite');
+  if(inviteToken)void (async()=>{
+    try{const redeemed=await api('/chat-invitations/redeem','POST',{token:inviteToken,client_request_id:keyId('invite:'+inviteToken)});const route=new URL(location.href);route.searchParams.delete('chat_invite');route.searchParams.set('session_id',redeemed.session_id);history.replaceState({},'',route);ids.delete('invite:'+inviteToken);}
+    catch(error){note('Invitation could not be redeemed: '+error.message);}
+  })();
+  let finished=false;
+  const bootReady=()=>{
+    if(finished)return;
+    finished=true;
+    window.__boot?.appReady();
+    clearInterval(poll);
+    // An idle-paused tab (chat/core/idle-pause.js) skips the status poll; it resumes on input.
+    // Status is reread every 3 s while a run is active, every 15 s otherwise: the open
+    // conversation's stream already carries its own run changes.
+    let statusAt=0;
+    poll=setInterval(()=>{if(idlePaused())return;const busy=(state?.runs||[]).some(run=>['queued','running','waiting_gate'].includes(run.status));if(!busy&&Date.now()-statusAt<15000)return;statusAt=Date.now();refresh().then(()=>issues.resolve('status_poll')).catch(error=>issues.fail('status_poll',error));},3000);
+  };
+  // Phase C: the active page and the transcript open independently of each other.
+  // On a phone a session deep link shows only the chat, so its tab loads when the user switches
+  // back to it; on desktop both panels are visible, so the page loads beside the transcript.
+  const pageReady=chatFirst&&mobileLayout.matches?Promise.resolve():ensureMainPage(activeMainPage).catch(()=>{});
+  if(!chatFirst&&mobileLayout.matches)showMobileView('main');
+  if(chatFirst){
+    void openChatSurface().catch(error=>note(error.message)).finally(bootReady);
+  }else{
+    await pageReady;
+    if(initialTab==='account')showAccountPanel('replace');
+    if(mobileLayout.matches)bootReady();
+    else void openChatSurface().catch(error=>note(error.message)).finally(bootReady);
+  }
+  void pageReady.then(()=>{
+    if(activeMainPage!=='agents'||sessionsScope||createScope||!$('config-page'))return;
+    void showAgentView(new URL(location.href).searchParams.get('agentView')||(me.is_admin?'config':'model'),'replace').catch(error=>note(error.message));
+  });
+}
+// Rebuilds the model table for the current agent, discarding a stale in-flight run.
+let modelsGeneration=0;
+async function syncAgentModels(){
+  if(!$('selection-model-table')||!agentRoster.length)return;
+  const generation=++modelsGeneration,id=agentId;
+  try{await mountAgentModels();}catch(error){note('Agent model table unavailable: '+error.message);return;}
+  if(generation!==modelsGeneration)return;
+  if(id!==agentId)return syncAgentModels();
+}
+async function mountAgentModels(){
+  selectionTable?.destroy();
+  selectionTable=null;
+  $('selection-model-table').replaceChildren();
+  $('model-page').querySelector('.ac-model-table').hidden=true;
+  const mountModels=()=>mountSelectionTable($('selection-model-table'),{
+    request:api,agentId,
+    onAgent:async id=>{
+      agentId=id;
+      const route=new URL(location.href);
+      route.searchParams.set('agent',id);
+      if(route.href!==location.href)history.pushState({},'',route);
+      await showAgentView(route.searchParams.get('agentView')||'model','replace');
+    },
+    onAssignment:async(id,assignment)=>{
+      explicitAssignment=!!assignment?.roles?.standard;
+      $('model-page').querySelector('.ac-model-table').hidden=true;
+          renderAgentCards();
+    }
+  });
+  try{
+    selectionTable=await mountModels();
+  }catch(error){
+    if(error.status===401)throw error;
+    if(agentId!=='shared_default'&&[403,404].includes(error.status)){
+      agentId='shared_default';
+      const route=new URL(location.href);
+      route.searchParams.set('agent',agentId);
+      history.replaceState({},'',route);
+      renderAgentCards();
+      try{selectionTable=await mountModels();}
+      catch(fallbackError){error=fallbackError;selectionTable=null;}
+      if(selectionTable)note('Requested agent is unavailable. Showing WebAgent.');
+    }
+    if(!selectionTable){
+      const warning=document.createElement('p');
+      warning.className='ac-hint';
+      warning.setAttribute('role','status');
+      warning.textContent=error.status===404?'Model role management requires a backend update.':'Model assignment management unavailable: '+error.message;
+      $('selection-model-table').replaceChildren(warning);
+    }
+  }
+}
+// A rejected sign-in is a credential error, not expiry of an authenticated session.
+// Keep credential forms open and report errors below their password fields; error feedback is an accessibility invariant.
+/** Set an inline password error and its accessible invalid/description state. */
+function passwordError(fieldId,errorId,message=''){
+  const field=$(fieldId);
+  let error=$(errorId);
+  // An older cached form partial can coexist with the newly published script.
+  if(!error){
+    error=document.createElement('p');error.id=errorId;error.className='password-error';
+    error.setAttribute('role','status');error.setAttribute('aria-live','polite');field.after(error);
+  }
+  const descriptions=new Set((field.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean));
+  descriptions.add(errorId);field.setAttribute('aria-describedby',[...descriptions].join(' '));
+  error.textContent=message;error.hidden=!message;
+  if(message)field.setAttribute('aria-invalid','true');else field.removeAttribute('aria-invalid');
+}
+$('login-password').addEventListener('input',()=>passwordError('login-password','login-password-error'));
+$('login-username').addEventListener('input',()=>passwordError('login-password','login-password-error'));
+// Registration mirrors V2's mode switch; V3 retains independent cookie authentication.
+let registerMode=false;
+$('register-toggle').onclick=()=>{
+  registerMode=!registerMode;
+  passwordError('login-password','login-password-error');
+  $('registration-status').classList.remove('is-error');
+  $('login-title').textContent=registerMode?'Create account':'Sign in';
+  $('login-submit').textContent=registerMode?'Create account':'Sign in';
+  $('register-toggle').textContent=registerMode?'Back to sign in':'Create an account';
+  $('register-name-row').hidden=!registerMode;
+  $('register-name').disabled=!registerMode;
+  $('register-name').required=registerMode;
+  $('login-password').autocomplete=registerMode?'new-password':'current-password';
+  $('login-password').minLength=registerMode?8:0;
+  $('registration-status').textContent='';
+};
+$('login-form').onsubmit=async event=>{
+  event.preventDefault();
+  const submit=$('login-submit');submit.disabled=true;
+  passwordError('login-password','login-password-error');
+  $('registration-status').classList.remove('is-error');
+  $('registration-status').textContent=registerMode?'Creating account…':'Signing in…';
+  try{
+    const data=new FormData($('login-form'));
+    const body={username:String(data.get('username')).trim(),password:data.get('password')};
+    if(registerMode)body.display_name=String(data.get('display_name')).trim();
+    const result=await api(registerMode?'/auth/register':'/auth/login','POST',body);
+    if(result.pending_approval){
+      $('login-password').value='';
+      $('registration-status').textContent='Account created and waiting for administrator approval.';
+      return;
+    }
+    csrf=result.csrf_token;$('login-form').reset();await boot();
+    $('registration-status').textContent='';
+  }catch(error){
+    if(!registerMode&&error.status===401){
+      $('registration-status').textContent='';
+      passwordError('login-password','login-password-error','Incorrect username or password. Please try again.');
+    }else{
+      $('registration-status').classList.add('is-error');
+      $('registration-status').textContent=error.message;
+    }
+  }
+  finally{submit.disabled=false;}
+};
+const accountMenu=$('user-dropdown-menu');
+// V2's body-level portal keeps the panel out of the header carousel's clipping context.
+document.body.append(accountMenu);
+function positionAccountMenu(){
+  if(accountMenu.hidden)return;
+  const anchor=$('top-user-id').getBoundingClientRect(),height=accountMenu.offsetHeight;
+  // In the mobile sidebar footer the trigger sits low, so open upward when the menu does not fit below.
+  const below=Math.round(anchor.bottom+6),top=below+height>innerHeight-8?Math.round(anchor.top-height-6):below;
+  accountMenu.style.marginTop='0';
+  accountMenu.style.top=Math.max(8,Math.min(top,innerHeight-height-8))+'px';
+  accountMenu.style.left=Math.max(8,Math.min(Math.round(anchor.left),innerWidth-accountMenu.offsetWidth-8))+'px';
+}
+function closeAccountMenu(){accountMenu.hidden=true;$('top-user-id').setAttribute('aria-expanded','false');}
+$('top-user-id').onclick=event=>{event.stopPropagation();accountMenu.hidden=!accountMenu.hidden;$('top-user-id').setAttribute('aria-expanded',String(!accountMenu.hidden));positionAccountMenu();};
+const closeOutsideAccountMenu=event=>{if(!accountMenu.hidden&&!event.target.closest('#user-dropdown-menu, #top-user-id'))closeAccountMenu();};
+document.addEventListener('pointerdown',closeOutsideAccountMenu,true);
+document.addEventListener('click',closeOutsideAccountMenu,true);
+window.addEventListener('resize',positionAccountMenu);
+document.querySelector('#main-tabs').addEventListener('scroll',positionAccountMenu);
+document.addEventListener?.('keydown',event=>{if(event.key==='Escape')closeAccountMenu();});
+let accountMe=null;
+function renderAccount(me){
+  accountMe=me;
+  // Main-page visibility follows the authenticated identity, including on sign-in changes.
+  for(const page of mainPages.filter(page=>adminPages.includes(page.id))){
+    $('tab-button-'+page.id).hidden=!me.is_admin;
+    $('mobile-nav-'+page.id).hidden=!me.is_admin;
+    const option=$('main-tab-select').querySelector('option[value="'+page.id+'"]');
+    if(option) option.disabled=!me.is_admin;
+  }
+  if(!me.is_admin&&adminPages.includes(activeMainPage)) showMainPage('agents','replace');
+  const guest=me.role==='guest';
+  // Main pages mount lazily, so render only the nodes that exist now; the account
+  // partial is filled again when it mounts (see ensureMainPage).
+  const setHidden=(id,hidden)=>{const el=$(id);if(el)el.hidden=hidden;};
+  const setText=(id,text)=>{const el=$(id);if(el)el.textContent=text;};
+  const setValue=(id,value)=>{const el=$(id);if(el)el.value=value;};
+  for(const id of ['account-profile-form','account-password-form','account-session-policy-form'])setHidden(id,guest);
+  setHidden('shutoff',!me.is_admin);
+  setHidden('header-refresh-browser',!me.is_admin);
+  // Agent-scoped Models has its own permission checks and is also useful to members.
+  const agentTabs=document.querySelector('#agents-grid .agent-card-tabs-wrap');if(agentTabs)agentTabs.hidden=false;
+  setText('account-name',me.display_name||me.user||'Account');
+  setText('account-username',me.user||'');
+  setText('account-identity',me.user||'');
+  setValue('account-login-name',me.user||'');
+  setValue('account-display-name',me.display_name||me.user||'');
+  const topUser=$('top-user-id');if(topUser)topUser.title=me.user||'Manage account';
+}
+function showAccountPanel(routeMode='push'){showMainPage('account',routeMode);}
+function showMainPage(id,routeMode='push'){
+  if(!mainPages.some(page=>page.id===id)||adminPages.includes(id)&&!accountMe?.is_admin)return;
+  closeMobileNav();
+  activeMainPage=id;
+  updateMainPageState();
+  const ready=ensureMainPage(id).catch(()=>{});
+  if(id!=='agents')disposeSessionsPage();
+  else if(sessionsScope&&accountMe)void ready.then(()=>showSessions('replace')).catch(error=>note(error.message));
+  // A lazily loaded agents page still opens on its default agent view, as a boot-time load does.
+  if(id==='agents'&&accountMe)void ready.then(()=>{
+    if(sessionsScope||createScope||!$('config-page'))return;
+    return showAgentView(new URL(location.href).searchParams.get('agentView')||(accountMe.is_admin?'config':'model'),'replace');
+  }).catch(error=>note(error.message));
+  if(id==='account')void ready.then(()=>loadAccountControls(),()=>{});
+  const route=new URL(location.href);
+  route.searchParams.set('tab',id);
+  if(id==='agents')route.searchParams.set('agent',agentId);
+  if(route.href!==location.href)history[routeMode==='replace'?'replaceState':'pushState']({},'',route);
+  if(mobileLayout.matches)showMobileView('main');
+  updateMobileNavigation();
+}
+$('manage-account').onclick=()=>{closeAccountMenu();showAccountPanel();};
+// The account page mounts lazily; bind its controls once its partial exists.
+// loadAccountControls stays module-scoped because showMainPage calls it on mount.
+let loadAccountControls=()=>{};
+function bindAccountPageControls(){
+$('account-current-password').addEventListener('input',()=>passwordError('account-current-password','account-current-password-error'));
+$('account-profile-form').onsubmit=async event=>{
+  event.preventDefault();
+  const status=$('account-profile-status');
+  const display_name=$('account-display-name').value.trim();
+  const username=$('account-login-name').value.trim();
+  if(!display_name||!username){status.textContent='Enter a username and display name.';return;}
+  try{
+    const profile=await api('/auth/profile','PUT',{username,display_name});
+    renderAccount({...accountMe,...profile});
+    status.textContent='Saved';
+  }catch(error){status.textContent=error.message;}
+};
+loadAccountControls=async function(){
+  availableModelsDispose?.();
+  availableModelsDispose=mountAvailableModels($('account-available-models'),api);
+  try{
+    const [policy,listing]=await Promise.all([api('/auth/session-policy'),api('/auth/sessions')]);
+    $('account-session-days').value=String(policy.days);
+    const list=$('account-sessions');
+    list.replaceChildren();
+    for(const entry of listing.sessions){
+      const row=document.createElement('div');row.className='account-signin-row';
+      const details=document.createElement('div');details.className='account-signin-details';
+      const name=document.createElement('strong');name.textContent=entry.current?'This browser':(entry.user_agent||'Unknown browser');
+      const dates=document.createElement('span');
+      const when=entry.created_at?new Date(entry.created_at*1000).toLocaleString():'Earlier sign-in';
+      dates.textContent=when+' · expires '+new Date(entry.expires_at*1000).toLocaleString();
+      details.append(name,dates);
+      const revoke=document.createElement('button');revoke.type='button';
+      revoke.textContent=entry.current?'Sign out':'Revoke';revoke.onclick=async()=>{
+        await api('/auth/sessions/'+encodeURIComponent(entry.id),'DELETE');
+        if(entry.current){out();note('Signed out.');}else await loadAccountControls();
+      };
+      revoke.className='account-btn';row.append(details,revoke);list.append(row);
+    }
+    if(!listing.sessions.length)list.textContent='No active sign-ins.';
+    $('account-sessions-status').textContent='';
+  }catch(error){$('account-sessions-status').textContent=error.message;}
+};
+$('account-sessions-refresh').onclick=loadAccountControls;
+$('account-session-policy-form').onsubmit=async event=>{
+  event.preventDefault();
+  const status=$('account-session-policy-status');
+  try{
+    await api('/auth/session-policy','PUT',{days:Number($('account-session-days').value)});
+    status.textContent='Saved. Applies to new sign-ins.';
+  }catch(error){status.textContent=error.message;}
+};
+$('account-password-form').onsubmit=async event=>{
+  event.preventDefault();
+  const status=$('account-password-status');
+  passwordError('account-current-password','account-current-password-error');
+  status.classList.remove('is-error');status.textContent='';
+  const current_password=$('account-current-password').value;
+  const new_password=$('account-new-password').value;
+  if(new_password!==$('account-confirm-password').value){
+    status.classList.add('is-error');
+    status.textContent='New passwords do not match.';
+    return;
+  }
+  try{
+    await api('/auth/change-password','POST',{current_password,new_password});
+    $('account-password-form').reset();
+    out();
+    note('Password changed. Sign in again.');
+  }catch(error){
+    if(error.status===403&&error.message==='Current password is incorrect'){
+      passwordError('account-current-password','account-current-password-error','Current password is incorrect. Please try again.');
+    }else{status.classList.add('is-error');status.textContent=error.message;}
+  }
+};
+}
+const mobileLayout=matchMedia('(max-width:800px)');
+let mobileView=initialTab==='account'?'main':new URL(location.href).searchParams.has('session_id')?'chat':'main';
+/* The back press the chat view holds on a phone; waits for the view that must be left. */
+let mobileChatBack=null;
+let desktopChatVisible=true;
+const widget=mountNativeWidget({chat,createFloatingChat,createChatLauncher,onChange:()=>syncLayout(),onDock:()=>{desktopChatVisible=true;syncLayout();},note});
+// The floating shell is a chat trigger too: the panel may still be unmounted.
+const widgetOpen=widget.open.bind(widget),widgetFloat=widget.float.bind(widget);
+widget.open=()=>{widgetOpen();void openChatSurface().catch(error=>note(error.message));};
+widget.float=()=>{widgetFloat();void openChatSurface().catch(error=>note(error.message));};
+const chatResize=mountChatResize({enabled:()=>!mobileLayout.matches&&!widget.floating&&desktopChatVisible});
+function updateChatControl(visible){$('chat-toggle-btn').classList.toggle('active',visible);$('chat-toggle-btn').setAttribute('aria-expanded',String(visible));}
+function showMobileView(view){mobileView=view;$('app').dataset.mobileView=view;updateChatControl(view==='chat');updateMainPageState();
+  // On a phone the chat view claims one back press; leaving it drops the claim.
+  if(view==='chat'&&mobileLayout.matches){if(!mobileChatBack)mobileChatBack=pushBackHandler(()=>{mobileChatBack=null;showMobileView('main');return true;});}
+  else if(mobileChatBack){const release=mobileChatBack;mobileChatBack=null;release();}
+}
+function syncLayout(){
+  document.body.classList.toggle('mobile-mode',mobileLayout.matches);
+  $('mobile-nav-toggle').hidden=!mobileLayout.matches;
+  $('mobile-back-main-btn').hidden=!mobileLayout.matches;
+  if(!mobileLayout.matches)closeMobileNav();
+  // The desktop tab strip is hidden on mobile, so the account control lives in the sidebar footer there.
+  const account=document.querySelector('.user-dropdown');
+  if(mobileLayout.matches)$('mobile-nav-footer').append(account);
+  else if(account.parentElement!==$('main-tabs'))$('main-tabs').insertBefore(account,$('main-tabs').querySelector('.main-tab'));
+  positionAccountMenu();
+  updateMobileNavigation();
+  if(widget.floating){if(mobileLayout.matches)$('app').dataset.mobileView='main';else delete $('app').dataset.mobileView;updateMainPageState();$('chat-panel').hidden=false;$('chat-resize-handle').hidden=true;updateChatControl(widget.isOpen);return;}
+  if(mobileLayout.matches){$('chat-panel').hidden=false;$('chat-resize-handle').hidden=false;showMobileView(mobileView);}
+  else{delete $('app').dataset.mobileView;$('chat-panel').hidden=!desktopChatVisible;$('chat-resize-handle').hidden=!desktopChatVisible;updateChatControl(desktopChatVisible);updateMainPageState();}
+}
+const mobileNav=$('mobile-nav-menu');
+function closeMobileNav(){mobileNav.hidden=true;$('mobile-nav-toggle').setAttribute('aria-expanded','false');}
+function updateMobileNavigation(){
+  $('mobile-back-main-btn').textContent=mainPages.find(page=>page.id===activeMainPage)?.label||'';
+  for(const page of mainPages)$('mobile-nav-'+page.id).classList.toggle('active',page.id===activeMainPage);
+}
+$('mobile-nav-toggle').onclick=event=>{event.stopPropagation();closeAccountMenu();mobileNav.hidden=!mobileNav.hidden;$('mobile-nav-toggle').setAttribute('aria-expanded',String(!mobileNav.hidden));};
+$('mobile-back-main-btn').onclick=()=>showMainPage(activeMainPage);
+// The account menu is a body portal opened from the sidebar footer; using it keeps the sidebar open.
+document.addEventListener('click',event=>{if(!mobileNav.hidden&&!event.target.closest('#mobile-nav-menu, #mobile-nav-toggle, #user-dropdown-menu'))closeMobileNav();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeMobileNav();});
+mobileLayout.addEventListener('change',syncLayout);syncLayout();
+// An open in-place page claims the first back press; anything else reloads to match the URL.
+/* A back press inside the app re-renders the agent page the restored URL names instead of reloading. */
+function restoreAgentRoute(){
+  if(!accountMe||location.pathname!=='/app')return false;
+  const params=new URL(location.href).searchParams;
+  if((params.get('tab')||'')!=='agents'||params.get('agentScope'))return false;
+  if((params.get('agent')||'shared_default')!==agentId)return false;
+  const view=params.get('agentView')||'config';
+  if(![configPage,...agentPages].some(page=>page&&page.id===view))return false;
+  void showAgentView(view,'replace').catch(error=>note(error.message));
+  return true;
+}
+// The top layer takes the press first, then the restored page; only a foreign URL reloads.
+window.addEventListener('popstate',()=>{if(consumeBack())return;if(restoreAgentRoute())return;location.reload();});
+$('chat-float-btn').onclick=()=>{widget.float();syncLayout();};
+// The chat toggle also mounts the panel and runs the deferred open before switching views.
+$('chat-toggle-btn').onclick=()=>{if(widget.floating){widget.open();syncLayout();return;}if(mobileLayout.matches){void ensureChat().then(()=>{showMobileView('chat');void openChatSurface().catch(error=>note(error.message));},error=>note(error.message));}else{desktopChatVisible=!desktopChatVisible;syncLayout();if(desktopChatVisible)void openChatSurface().catch(error=>note(error.message));}};
+
+let browserResetInProgress=false;
+async function hardRefresh(){
+  if(browserResetInProgress)return;
+  browserResetInProgress=true;
+  $('header-refresh-browser').disabled=true;
+  try { await purgeAllBrowserData(); } finally {
+    const url=new URL(location.href);
+    url.searchParams.set('_',String(Date.now()));
+    location.replace(url);
+  }
+}
+$('header-refresh-browser').onclick=()=>{void hardRefresh();};
+function setupHeaderPullRefresh(){
+  const indicator=$('ptr-indicator'),blue=$('ptr-blue'),red=$('ptr-red'),hint=$('ptr-hint');
+  const fullDash=98,normalAt=.5,hardAt=.85;
+  let pullZone=50,configLoading=false;
+  // Keep the last valid preference on network/config errors; never interrupt a drag.
+  async function refreshPullZone(){
+    if(configLoading||document.hidden||document.body.classList.contains('app-restricted'))return;
+    configLoading=true;
+    try{
+      const response=await fetch('/api/v3/auth/ui-config',{credentials:'same-origin',cache:'no-store'});
+      if(!response.ok)return;
+      const appUi=(await response.json()).app_ui;
+      const value=appUi?.pull_to_refresh?.start_zone_px;
+      if(typeof value==='number'&&Number.isFinite(value)&&value>=0)pullZone=value;
+      applyMobileFullHeight(appUi?.mobile_mode?.full_height===true);
+    }catch{}finally{configLoading=false;}
+  }
+  setInterval(refreshPullZone,5000);
+  document.addEventListener('visibilitychange',refreshPullZone);
+  window.addEventListener('v3-identity-changed',refreshPullZone);
+  void refreshPullZone();
+  let dragging=false,startY=0,stage=0;
+  function end(){
+    if(!dragging)return;
+    const action=stage;
+    dragging=false;startY=0;stage=0;
+    if(!action){indicator.hidden=true;hint.textContent='';hint.classList.remove('show');return;}
+    indicator.classList.add('loading');
+    hint.textContent=action===2?'CLEARING BROWSER DATA':'REFRESHING';hint.classList.add('show');
+    if(action===1)setTimeout(()=>location.reload(),120);
+    if(action===2)void hardRefresh();
+  }
+  document.addEventListener('touchstart',event=>{
+    if(!mobileLayout.matches||window.scrollY>5||indicator.classList.contains('loading')||!event.touches.length)return;
+    const touch=event.touches[0];
+    // Only the viewport top band can arm refresh; content pulls remain scrolling.
+    if(touch.clientY<0||touch.clientY>pullZone)return;
+    dragging=true;startY=touch.clientY;stage=0;
+    indicator.hidden=false;indicator.style.height='0px';indicator.style.opacity='1';
+    blue.setAttribute('stroke-dashoffset',String(fullDash));
+    red.style.display='none';red.setAttribute('stroke-dashoffset',String(fullDash));
+    hint.textContent='';hint.classList.remove('show');
+  },{passive:true});
+  document.addEventListener('touchmove',event=>{
+    if(!dragging||!event.touches.length)return;
+    // A second finger makes this a chat pinch-zoom, never a refresh.
+    if(event.touches.length>1){dragging=false;stage=0;indicator.hidden=true;hint.classList.remove('show');return;}
+    const raw=event.touches[0].clientY-startY;
+    if(raw<=0){indicator.hidden=true;dragging=false;return;}
+    const height=window.innerHeight,normal=height*normalAt,hard=height*hardAt;
+    indicator.style.height=Math.min(raw*.4,height*.85)+'px';
+    if(raw>=hard){
+      stage=2;blue.setAttribute('stroke-dashoffset','0');red.style.display='';
+      red.setAttribute('stroke-dashoffset',String(fullDash*(1-Math.min((raw-normal)/(hard-normal),1))));
+      hint.textContent='HARD REFRESH';hint.classList.add('show');
+    }else if(raw>=normal){
+      stage=1;blue.setAttribute('stroke-dashoffset','0');red.style.display='none';
+      hint.textContent='RELEASE TO REFRESH';hint.classList.add('show');
+    }else{
+      stage=0;blue.setAttribute('stroke-dashoffset',String(fullDash*(1-raw/normal)));
+      red.style.display='none';hint.textContent='PULL TO REFRESH';hint.classList.add('show');
+    }
+    if(event.cancelable)event.preventDefault();
+  },{passive:false});
+  document.addEventListener('touchend',end,{passive:true});
+  document.addEventListener('touchcancel',()=>{dragging=false;indicator.hidden=true;},{passive:true});
+}
+setupHeaderPullRefresh();
+async function signOut(){await api('/auth/logout','POST',{});out();}
+$('logout').onclick=guard(signOut);
+const systemTheme=matchMedia('(prefers-color-scheme: light)');
+let themeChoice='system';
+try{const saved=localStorage.getItem('v3-theme');if(['light','dark','system'].includes(saved))themeChoice=saved;}catch{}
+// The account menu and the mobile sidebar footer each have a theme switch; both stay in sync.
+const themeOptions=document.querySelectorAll('#user-dropdown-menu .theme-option, #mobile-nav-footer .theme-option');
+const themeBar=document.querySelector('meta[name="theme-color"]');
+let themeBarFrame=0;
+// Mirrors --bg-0 (design-system.css) so OS status/nav bars match the app theme.
+// While the black boot curtain is up the bar stays black and then fades with it, frame by frame.
+function paintThemeBar(light){
+  cancelAnimationFrame(themeBarFrame);
+  const curtain=document.getElementById('boot-curtain');
+  let color=light?'#ffffff':'#000000';
+  if(light&&curtain){const v=Math.round(255*(1-Number(getComputedStyle(curtain).opacity)));color=`rgb(${v},${v},${v})`;themeBarFrame=requestAnimationFrame(()=>paintThemeBar(light));}
+  if(themeBar&&themeBar.content!==color)themeBar.content=color;
+}
+function applyAccountTheme(){
+  const light=themeChoice==='light'||themeChoice==='system'&&systemTheme.matches;
+  document.body.classList.toggle('light-mode',light);
+  paintThemeBar(light);
+  for(const option of themeOptions){
+    const active=option.dataset.theme===themeChoice;
+    option.classList.toggle('active',active);option.setAttribute('aria-pressed',String(active));
+  }
+}
+// Cross-fade the whole page into the new theme; unsupported browsers and reduced motion switch instantly.
+function fadeAccountTheme(){
+  if(!document.startViewTransition||matchMedia('(prefers-reduced-motion: reduce)').matches){applyAccountTheme();return;}
+  document.startViewTransition(applyAccountTheme);
+}
+for(const option of themeOptions)option.onclick=()=>{
+  themeChoice=option.dataset.theme;
+  try{localStorage.setItem('v3-theme',themeChoice);}catch{}
+  fadeAccountTheme();
+};
+systemTheme.addEventListener('change',()=>{if(themeChoice==='system')fadeAccountTheme();});
+applyAccountTheme();
+$('shutoff').onclick=guard(async()=>{await api('/control','PUT',{shutoff:!state.shutoff,client_request_id:crypto.randomUUID()});await refresh();});
+// Agent-page controls belong to the agents page, which mounts on first navigation.
+function bindAgentPageControls(){
+  $('connect').onclick=guard(async()=>{await api('/provider/login','POST',{});await refresh();$('device').scrollIntoView({block:'nearest'});});
+  $('disconnect').onclick=guard(async()=>{await api('/provider/logout','POST',{});await refresh();});
+  $('model-form').onsubmit=guard(async()=>{agentModel=(await api('/agents/'+agentId+'/model','PUT',{model:$('model').value.trim()})).model;await refresh();});
+}
+const start=()=>api('/auth/setup-status').then(status=>{if(!status.initialized){location.replace('/setup.html');return;}return boot();}).catch(error=>{if(error.status===401)out();note(error.message);if(error.message===OFFLINE)setTimeout(start,3000);window.__boot?.reveal();});
+start();
+
+// App-shell ownership includes the header account portal; chat shares its gesture registry.
+import '../shared/header-feedback/header-feedback.js';

@@ -1,0 +1,35 @@
+{
+  "name": "sandbox_delete",
+  "description": "Delete one of the user's saved UI elements with this agent; asks for approval in Ask mode.",
+  "effect": "write",
+  "repeat_guard": {
+    "risk": "low"
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]{1,40}$"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "delete the saved element"
+    ],
+    "keywords": [
+      "element",
+      "delete"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "get_time",
+  "description": "Current time in UTC or a fixed UTC offset; IANA timezones are unsupported",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "timezone": {
+        "maxLength": 9,
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

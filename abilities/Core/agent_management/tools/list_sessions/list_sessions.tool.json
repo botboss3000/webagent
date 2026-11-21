@@ -1,0 +1,40 @@
+{
+  "name": "list_sessions",
+  "description": "List sessions in scope, newest first, with ID, title, agent, last activity, run status and relation.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "cursor": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "list my sessions",
+      "show recent chats",
+      "which sub agents are running"
+    ],
+    "keywords": [
+      "sessions",
+      "chats"
+    ]
+  }
+}

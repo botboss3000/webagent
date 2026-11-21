@@ -1,0 +1,46 @@
+{
+  "name": "calculate",
+  "description": "Bounded finite arithmetic on explicit operands; no expressions or code",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operands": {
+        "items": {
+          "type": "number"
+        },
+        "maxItems": 32,
+        "minItems": 1,
+        "type": "array"
+      },
+      "operation": {
+        "enum": [
+          "add",
+          "subtract",
+          "multiply",
+          "divide",
+          "remainder",
+          "power",
+          "sqrt",
+          "abs",
+          "min",
+          "max"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "operation",
+      "operands"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

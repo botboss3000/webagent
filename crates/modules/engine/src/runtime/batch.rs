@@ -1,0 +1,981 @@
+use super::ports::{
+    AgentPolicy, ChatAuthority, ContextDiagnostics, CredentialBindings, FollowupQueue,
+    InstallationAccess, MainGuidance, ModelDiagnostics, ModuleBindings, NativePolicy, PromptSlots,
+    ProviderUsage, RunObservation, RunPresentation, ScopedStorage, SkillSources, StartupPolicy,
+};
+use super::{config, models::ModelRecords, Runtime};
+use crate::context::abilities::Catalog;
+use crate::ports::{AdmissionEffects, ChatEffects, NotificationEffects, ToolJournal, UsageEffects};
+use crate::tools::{self, execution as tool_execution};
+use crate::{digest, uuid, workflow};
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
+use webagent_access as access;
+// A model turn may request several independent tools. Rust authorizes each
+// one; the Python worker only receives calls that passed its own gate.
+
+use tokio::task::JoinSet;
+
+/// The calls of one parallel batch, each tagged with its index, tool and pending ID.
+pub(crate) type BatchCalls = JoinSet<(
+    usize,
+    String,
+    String,
+    Result<crate::tools::outcome::Outcome>,
+)>;
+
+// A result commit takes the same gate as tool authorization. Tool futures must
+// keep being polled while that commit waits, including the future holding the
+// gate. A parent-polled FuturesUnordered can deadlock at this boundary.
+#[cfg(test)]
+fn spawn_batch_calls<T, F>(calls: impl IntoIterator<Item = F>) -> JoinSet<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = T> + Send + 'static,
+{
+    let mut tasks = JoinSet::new();
+    for call in calls {
+        tasks.spawn(call);
+    }
+    tasks
+}
+
+fn denied(message: &str) -> Value {
+    json!({"status":"denied","output":message})
+}
+
+/// The result text for a read whose invocation failed: the cause, on one bounded line.
+fn interrupted_text(error: &impl std::fmt::Display) -> String {
+    let text = error.to_string();
+    let line = text.lines().next().unwrap_or_default();
+    let cut = line
+        .char_indices()
+        .nth(300)
+        .map_or(line.len(), |(at, _)| at);
+    if line.is_empty() {
+        "Tool interrupted".to_owned()
+    } else {
+        format!("Tool interrupted: {}", &line[..cut])
+    }
+}
+
+/// Skill discovery tools; a batch containing one runs serially.
+pub(crate) fn serial_discovery(name: &str) -> bool {
+    matches!(name, "list_skills" | "load_skill")
+}
+
+/// Model-facing denial text naming the layer that refused the call.
+pub(crate) fn denial_message(reason: access::Reason, invalid_arguments: bool) -> String {
+    use access::Reason;
+    if invalid_arguments {
+        return "Tool invocation denied: arguments must be a JSON object matching the tool schema"
+            .to_owned();
+    }
+    let cause = match reason {
+        Reason::TierDenied => {
+            "this agent's owner is on a tier that does not include this ability. Tell the \
+             user an upgrade of the owner's tier is needed; do not retry"
+        }
+        Reason::AgentDenied => "this tool is disabled for this agent",
+        Reason::AbilityDenied => "the ability that provides this tool is denied for this agent",
+        Reason::CapabilityDenied => "the member capability level does not allow this tool",
+        Reason::AccountInactive => "the account is inactive",
+        Reason::CallerDenied => "this caller may not use this tool",
+        Reason::AgentDisabled => "the agent is disabled",
+        Reason::Unavailable => "no installed ability provides this tool",
+        Reason::Hidden => "this tool is switched off for this agent or session",
+        Reason::RoleDenied => "this tool is not available to your role on this agent",
+        Reason::Allowed | Reason::ApprovalRequired => "the call was not permitted",
+    };
+    format!("Tool invocation denied: {cause}")
+}
+
+/// The pending call `id` on `run`: the single call, a parallel batch item, or a session
+/// script's nested step (`script_steps`, dispatched while its `script_run` call executes).
+#[must_use]
+pub fn pending_call(run: &Value, id: &str) -> Option<Value> {
+    if run["pending"]["id"] == id {
+        return Some(run["pending"].clone());
+    }
+    ["batch", "script_steps"].iter().find_map(|field| {
+        run[*field]
+            .as_array()?
+            .iter()
+            .find(|item| item["pending"]["id"] == id)
+            .map(|item| item["pending"].clone())
+    })
+}
+
+pub fn executing_write<A: tool_execution::ActionCatalog>(run: &Value) -> bool {
+    run["batch"].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item["state"] == "executing"
+                && !A::is_read(item["pending"]["name"].as_str().unwrap_or(""))
+        })
+    })
+}
+pub fn uncertain_count(run: &Value) -> usize {
+    run["batch"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item["state"] == "uncertain")
+                .count()
+        })
+        .unwrap_or(0)
+}
+/// The tool result an interrupted write gets after a restart, naming the restart's cause
+/// (`restart_interruption`) so the agent checks for a partial effect instead of resending.
+#[must_use]
+pub fn cut_off_result(run: &Value, retry: &tools::retry_guard::Retry) -> Value {
+    let interruption = &run["restart_interruption"];
+    let cause = match (
+        interruption["kind"].as_str(),
+        interruption["cause"]["job_id"].as_str(),
+    ) {
+        (Some("runtime_restart"), Some(job)) => format!(
+            "an app restart for deploy job {job} (session \"{}\")",
+            interruption["cause"]["session"]
+                .as_str()
+                .unwrap_or("unknown")
+        ),
+        (Some("runtime_restart"), None) => "a planned app restart".to_owned(),
+        _ => "an unexpected app restart".to_owned(),
+    };
+    let mut result = tools::retry_guard::outcome_unknown(retry);
+    result["output"] = json!(format!(
+        "Interrupted by {cause} while this call was running; its outcome is unknown. \
+         Check whether it made a partial change that needs reversing before continuing; \
+         do not simply resend it. {}",
+        result["output"].as_str().unwrap_or("")
+    ));
+    result
+}
+/// Restart recovery: every parallel write cut off by the restart, or still held as
+/// uncertain, completes with `cut_off_result` whatever its risk. Nothing waits for review.
+pub fn settle_cut_off_writes<A: tool_execution::ActionCatalog>(run: &mut Value) {
+    let mut settled = Vec::new();
+    let mut results = Vec::new();
+    if let Some(items) = run["batch"].as_array() {
+        for (index, item) in items.iter().enumerate() {
+            let name = item["pending"]["name"].as_str().unwrap_or("");
+            if matches!(item["state"].as_str(), Some("executing" | "uncertain"))
+                && !A::is_read(name)
+            {
+                let retry = A::retry(name);
+                results.push((index, cut_off_result(run, &retry)));
+                settled.push((name.to_owned(), item["pending"].clone(), retry));
+            }
+        }
+    }
+    for (index, result) in results {
+        run["batch"][index]["result"] = result;
+        run["batch"][index]["state"] = json!("done");
+    }
+    for (name, pending, retry) in settled {
+        let call_id = pending["call_id"].as_str().unwrap_or("");
+        tools::retry_guard::record(run, &name, &pending["arguments"], call_id, None, &retry);
+    }
+}
+/// Settle parallel writes cut off by a stop, restart or revocation, or still held as
+/// uncertain. A high-risk write is
+/// held for review; any other write completes as "outcome unknown", which the repeat guard
+/// records so the agent cannot blindly repeat it. Returns whether a review is needed.
+pub fn mark_uncertain_writes<A: tool_execution::ActionCatalog>(run: &mut Value) -> bool {
+    let mut review = false;
+    let mut settled = Vec::new();
+    if let Some(items) = run["batch"].as_array_mut() {
+        for item in items {
+            let name = item["pending"]["name"].as_str().unwrap_or("").to_owned();
+            // Calls already held as uncertain are re-sorted too, so a call held before its
+            // tool's risk was lowered can settle instead of waiting for review forever.
+            if !matches!(item["state"].as_str(), Some("executing" | "uncertain"))
+                || A::is_read(&name)
+            {
+                continue;
+            }
+            let retry = A::retry(&name);
+            if retry.risk == tools::retry_guard::Risk::High {
+                item["state"] = json!("uncertain");
+                review = true;
+            } else {
+                item["result"] = tools::retry_guard::outcome_unknown(&retry);
+                item["state"] = json!("done");
+                settled.push((name, item["pending"].clone(), retry));
+            }
+        }
+    }
+    for (name, pending, retry) in settled {
+        let call_id = pending["call_id"].as_str().unwrap_or("");
+        tools::retry_guard::record(run, &name, &pending["arguments"], call_id, None, &retry);
+    }
+    review || uncertain_count(run) > 0
+}
+
+impl<
+        S: ScopedStorage
+            + ModelRecords
+            + ToolJournal
+            + ChatEffects
+            + AdmissionEffects
+            + NotificationEffects
+            + UsageEffects
+            + RunObservation
+            + RunPresentation,
+        C: config::SchemaCatalog,
+        B: Catalog,
+        A: super::actions::Actions<S> + Clone + PartialEq,
+        H: ChatAuthority<S>,
+        M: ModuleBindings<S>,
+        X: AgentPolicy<S>
+            + NativePolicy
+            + CredentialBindings<S>
+            + SkillSources<S>
+            + PromptSlots<S>
+            + MainGuidance<S>
+            + ModelDiagnostics<S>
+            + InstallationAccess<S>
+            + ContextDiagnostics<S>
+            + ProviderUsage
+            + StartupPolicy<S>
+            + FollowupQueue<S>
+            + super::native::NativeDispatch<S, C, B, H::Binding>,
+    > Runtime<S, C, B, A, H, M, X>
+{
+    /// A user message arrived during a batch: every call still running gets the "still
+    /// running as background call" stand-in and keeps running; finished calls keep their
+    /// results. The batch then completes and the model reads the message.
+    async fn detach_batch(
+        app: &Self,
+        id: &str,
+        generation: &str,
+        identities: std::collections::HashMap<
+            tokio::task::Id,
+            (usize, String, String, std::time::Instant),
+        >,
+        mut tokens: std::collections::HashMap<tokio::task::Id, CancellationToken>,
+        futures: BatchCalls,
+    ) -> Result<()> {
+        let _guard = app.handles.gate.lock().await;
+        let mut current = app.run(id).await?;
+        if current["generation"] != generation || current["status"] != "running" {
+            return Ok(());
+        }
+        let mut detached = std::collections::HashMap::new();
+        for (handle, (idx, name, pending_id, _)) in identities {
+            let pending = current["batch"][idx]["pending"].clone();
+            if pending["id"] != pending_id.as_str() {
+                continue;
+            }
+            let mut probe = current.clone();
+            probe["pending"] = pending.clone();
+            let Some(task_id) = app
+                .background_detach_record(&probe, &pending["arguments"], Value::Null)
+                .await?
+            else {
+                continue;
+            };
+            let call_id = pending["call_id"].as_str().unwrap_or("").to_owned();
+            tools::retry_guard::mark_running(
+                &mut current,
+                &name,
+                &pending["arguments"],
+                &call_id,
+                &task_id,
+                &A::retry(&name),
+            );
+            current["batch"][idx]["result"] = json!({"status":"running","call_id":task_id,"output":format!(
+                "Still running as background call {task_id}: the user sent a message, so this \
+                 call continues in the background while you answer it. Its result is delivered \
+                 to you automatically when it finishes. Do not repeat this call; if the user \
+                 asks to stop it, cancel it with background_calls_cancel.")});
+            current["batch"][idx]["state"] = json!("done");
+            if let Some(token) = tokens.remove(&handle) {
+                detached.insert(handle, (task_id, token));
+            }
+        }
+        app.save(&mut current).await?;
+        app.background_follow_batch(detached, futures);
+        Ok(())
+    }
+    pub async fn execute_parallel_batch(
+        app: &Self,
+        id: &str,
+        generation: &str,
+        cancel: &CancellationToken,
+        workflow_policy: &workflow::Policy,
+        access: &access::authority::LiveAccess,
+        mut run: Value,
+        guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<()> {
+        let calls = run["calls"]
+            .as_array()
+            .ok_or_else(|| anyhow!("Missing tool calls"))?
+            .clone();
+        let mut ids = std::collections::BTreeSet::new();
+        if calls.iter().any(|call| {
+            call["call_id"]
+                .as_str()
+                .is_none_or(|id| id.is_empty() || !ids.insert(id.to_owned()))
+        }) {
+            run["status"] = json!("failed");
+            run["error"] = json!("Provider returned missing or duplicate tool call identifiers");
+            app.save(&mut run).await?;
+            return Ok(());
+        }
+        if run["batch"].is_null() {
+            run["batch"] = json!(calls
+                .iter()
+                .map(|_| json!({"state":"new","pending":null,
+            "result":null,"pre_tool_receipt":null}))
+                .collect::<Vec<_>>());
+        }
+        if run["batch"].as_array().map(Vec::len) != Some(calls.len()) {
+            return Err(anyhow!("Batch checkpoint length mismatch"));
+        }
+        let sid = run["session_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing session"))?
+            .to_owned();
+        let agent_id = run["agent_id"]
+            .as_str()
+            .unwrap_or("shared_default")
+            .to_owned();
+        let (mode_revision, visibility, ability_state) = app
+            .ability_controls_for(
+                &sid,
+                run["requester_user_id"]
+                    .as_str()
+                    .unwrap_or(app.store.current_user_id()),
+            )
+            .await?;
+        let execution_mode = app.session_mode(&sid).await?;
+        let saved_index = run["call_index"].as_u64().unwrap_or(0);
+        // Calls admitted earlier in this turn: an identical later call is held, not run twice.
+        let mut admitted = std::collections::HashMap::new();
+        for (idx, model_call) in calls.iter().enumerate() {
+            if run["batch"][idx]["state"] != "new" {
+                continue;
+            }
+            let name = model_call["name"].as_str().unwrap_or("").to_owned();
+            let args = match model_call["arguments"]
+                .as_str()
+                .map(serde_json::from_str::<Value>)
+            {
+                Some(Ok(v)) if v.is_object() => v,
+                _ => json!({"invalid_arguments":true}),
+            };
+            run["call_index"] = json!(idx);
+            workflow::record(
+                &mut run,
+                workflow_policy,
+                &workflow::Input::PreTool(workflow::PreToolInput {
+                    name: name.clone(),
+                    arguments_digest: digest(&args),
+                    policy_version: 0,
+                    mode_revision,
+                    visibility_revision: visibility["revision"].as_u64().unwrap_or(0),
+                    ability_state_revision: ability_state["revision"].as_u64().unwrap_or(0),
+                }),
+                workflow::Decision::Pass,
+            )?;
+            let receipt = run["workflow"]["receipts"]["pre_tool"].clone();
+            let mut pending = json!({"id":uuid(),"name":name,"arguments":args,"call_id":model_call["call_id"],
+            "digest":digest(&args),"mode_revision":mode_revision,
+            "visibility_revision":visibility["revision"],"ability_state_revision":ability_state["revision"],
+            "access_revision":access.revision.clone(),"state":"requested","decision":null});
+            tool_execution::resolve::<A>(&visibility, &name)?;
+            let mut effective = app
+                .live_tool_decision(
+                    access,
+                    &name,
+                    &visibility,
+                    &ability_state,
+                    &run["loaded_abilities"],
+                )
+                .for_execution_mode(&execution_mode);
+            let mut result = if args.get("invalid_arguments").is_some()
+                || effective.permission == access::Permission::Deny
+            {
+                Some(denied(&denial_message(
+                    effective.reason,
+                    args.get("invalid_arguments").is_some(),
+                )))
+            } else {
+                None
+            };
+            if result.is_none() {
+                let mut view = run.clone();
+                view["pending"] = pending.clone();
+                result = match app
+                    .actions
+                    .preflight(app.store.records(), &mut view, &name, &args, &visibility)
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Some(denied(
+                        "Invalid action metadata or unavailable action record",
+                    )),
+                };
+                if result.is_none() {
+                    if let Err(error) = app
+                        .native
+                        .messaging_preflight(app.native_view(), &mut view, &name, &args)
+                        .await
+                    {
+                        result = Some(denied(
+                            error
+                                .downcast_ref::<webagent_access::PublicRefusal>()
+                                .map_or(
+                                    "Private messaging destination or authority unavailable",
+                                    |r| r.0,
+                                ),
+                        ));
+                    }
+                }
+                pending = view["pending"].clone();
+            }
+            if result.is_none() {
+                let retry = A::retry(&name);
+                let call_id = model_call["call_id"].as_str().unwrap_or("").to_owned();
+                match tools::retry_guard::admit(
+                    &mut run,
+                    &name,
+                    &args,
+                    &call_id,
+                    &retry,
+                    Some(&admitted),
+                ) {
+                    tools::retry_guard::Admission::Run => {}
+                    tools::retry_guard::Admission::Approve => {
+                        tools::retry_guard::require_approval(&mut pending, &args, &retry);
+                    }
+                    tools::retry_guard::Admission::Held(held) => result = Some(held),
+                }
+                if result.is_none()
+                    && !matches!(
+                        retry.risk,
+                        tools::retry_guard::Risk::None | tools::retry_guard::Risk::Exempt
+                    )
+                {
+                    admitted.insert(tools::retry_guard::key(&name, &args), call_id);
+                }
+                if pending["new_intent_confirmation"] == true {
+                    effective.permission = access::Permission::Ask;
+                }
+            }
+            let state = if result.is_some() {
+                "done"
+            } else if effective.permission == access::Permission::Ask {
+                "waiting"
+            } else {
+                "requested"
+            };
+            run["batch"][idx] = json!({"state":state,"pending":pending,"result":result,
+            "pre_tool_receipt":receipt});
+        }
+        run["call_index"] = json!(saved_index);
+
+        // APPROVAL-IDENTITY: only the matching call consumes the administrator's
+        // decision. Other calls retain distinct IDs, revisions, and arguments.
+        // A mode switch revokes the old approval and queues this run. Convert only
+        // calls that had not dispatched; their other policy revisions are checked
+        // again below before any worker sees them.
+        if execution_mode["execution_mode"] == "auto" {
+            for item in run["batch"]
+                .as_array_mut()
+                .expect("batch checkpoint is an array")
+            {
+                if item["state"] != "waiting" || item["pending"]["new_intent_confirmation"] == true
+                {
+                    continue;
+                }
+                item["state"] = json!("requested");
+                item["pending"]["id"] = json!(uuid());
+                item["pending"]["mode_revision"] = json!(mode_revision);
+                item["pending"]["decision"] = Value::Null;
+            }
+            // A repeat or additional-action confirmation stays waiting under Auto, so its
+            // pending decision is kept for the matching below; dropping it re-asked forever.
+            if run["pending"]["new_intent_confirmation"] != true {
+                run["pending"] = Value::Null;
+            }
+        }
+        if !run["pending"].is_null() {
+            let approval_id = run["pending"]["id"].clone();
+            for idx in 0..calls.len() {
+                if run["batch"][idx]["pending"]["id"] != approval_id {
+                    continue;
+                }
+                match run["pending"]["decision"].as_str() {
+                    Some("approve") => {
+                        run["batch"][idx]["pending"]["decision"] = json!("approve");
+                        run["batch"][idx]["state"] = json!("requested");
+                        run["pending"] = Value::Null;
+                    }
+                    Some("deny") => {
+                        app.actions
+                            .not_dispatched(
+                                app.store.records(),
+                                &run,
+                                &run["batch"][idx]["pending"],
+                            )
+                            .await?;
+                        run["batch"][idx]["result"] = tools::retry_guard::declined(&run["pending"])
+                            .unwrap_or_else(|| denied("Tool approval denied"));
+                        run["batch"][idx]["state"] = json!("done");
+                        run["pending"] = Value::Null;
+                    }
+                    _ => {}
+                }
+                break;
+            }
+        }
+
+        let mut dispatch = Vec::new();
+        let fresh_access = app
+            .native
+            .installation_access(app.store.records(), app.store.current_user_id(), &agent_id)
+            .await?;
+        for idx in 0..calls.len() {
+            if run["batch"][idx]["state"] != "requested" {
+                continue;
+            }
+            let pending = run["batch"][idx]["pending"].clone();
+            let name = pending["name"].as_str().unwrap_or("").to_owned();
+            let args = pending["arguments"].clone();
+            let effective = app
+                .live_tool_decision(
+                    &fresh_access,
+                    &name,
+                    &visibility,
+                    &ability_state,
+                    &run["loaded_abilities"],
+                )
+                .for_execution_mode(&execution_mode);
+            let fresh = pending["access_revision"] == json!(fresh_access.revision.clone())
+                && pending["mode_revision"] == json!(mode_revision)
+                && pending["visibility_revision"] == visibility["revision"]
+                && pending["ability_state_revision"] == ability_state["revision"];
+            tool_execution::resolve::<A>(&visibility, &name)?;
+            if !fresh
+                || effective.permission == access::Permission::Deny
+                || (effective.permission == access::Permission::Ask
+                    && pending["decision"] != "approve")
+            {
+                run["batch"][idx]["result"] =
+                    denied("Tool authorization changed before parallel dispatch");
+                run["batch"][idx]["state"] = json!("done");
+                continue;
+            }
+            // PRE-TOOL-LEASE: an approved call may resume under a new generation.
+            // Bind its receipt to the exact dispatch that is about to occur.
+            run["call_index"] = json!(idx);
+            workflow::record(
+                &mut run,
+                workflow_policy,
+                &workflow::Input::PreTool(workflow::PreToolInput {
+                    name: name.clone(),
+                    arguments_digest: digest(&args),
+                    policy_version: 0,
+                    mode_revision,
+                    visibility_revision: visibility["revision"].as_u64().unwrap_or(0),
+                    ability_state_revision: ability_state["revision"].as_u64().unwrap_or(0),
+                }),
+                workflow::Decision::Pass,
+            )?;
+            run["batch"][idx]["pre_tool_receipt"] = run["workflow"]["receipts"]["pre_tool"].clone();
+            run["call_index"] = json!(saved_index);
+            run["batch"][idx]["state"] = json!("executing");
+            run["batch"][idx]["pending"]["failure"] = Value::Null;
+            run["batch"][idx]["pending"]["state"] = json!("executing");
+            run["batch"][idx]["pending"]["human_approved"] =
+                json!(pending["decision"] == "approve");
+            run["batch"][idx]["pending"]["decision"] = json!("consumed");
+            dispatch.push((
+                idx,
+                name,
+                args,
+                pending["id"].as_str().unwrap_or("").to_owned(),
+                pending["policy_version"].as_u64().unwrap_or(0),
+            ));
+        }
+        run["pending"] = Value::Null;
+        app.save(&mut run).await?;
+        if !dispatch.is_empty() {
+            drop(guard);
+            let mut identities = std::collections::HashMap::new();
+            // Each call has its own token: a call detached for a user message outlives
+            // this step, while a run cancel still reaches every attached call.
+            let mut tokens = std::collections::HashMap::new();
+            let mut futures = JoinSet::new();
+            for (idx, name, args, pending_id, policy_version) in dispatch {
+                let task_app = app.clone();
+                let task_sid = sid.clone();
+                let task_run = id.to_owned();
+                let token = app.stop.child_token();
+                let task_cancel = token.clone();
+                let task_generation = generation.to_owned();
+                let identity = (
+                    idx,
+                    name.clone(),
+                    pending_id.clone(),
+                    std::time::Instant::now(),
+                );
+                let handle = futures.spawn(async move {
+                    let result = task_app
+                        .call(
+                            task_sid,
+                            task_run,
+                            task_generation,
+                            name.clone(),
+                            args,
+                            pending_id.clone(),
+                            policy_version,
+                            task_cancel,
+                        )
+                        .await;
+                    (idx, name, pending_id, result)
+                });
+                tokens.insert(handle.id(), token);
+                identities.insert(handle.id(), identity);
+            }
+            let grace = std::time::Duration::from_millis(
+                app.runtime.read().await.scheduler.message_detach_grace_ms,
+            );
+            let mut message_since: Option<std::time::Instant> = None;
+            let mut forwarded = false;
+            let mut detach = false;
+            loop {
+                let completed = tokio::select! {
+                    completed = futures.join_next_with_id() => match completed {
+                        Some(completed) => completed,
+                        None => break,
+                    },
+                    _ = cancel.cancelled(), if !forwarded => {
+                        forwarded = true;
+                        for token in tokens.values() {
+                            token.cancel();
+                        }
+                        continue;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)), if !forwarded => {
+                        if app.message_pending(&run).await.unwrap_or(false) {
+                            let since = *message_since.get_or_insert_with(std::time::Instant::now);
+                            // shortcut: detach only with room for every running call under
+                            // the 256-task cap; otherwise keep waiting as before.
+                            let room = app.store.background_scan(None).await
+                                .map(|tasks| tasks.len() + identities.len() <= 256)
+                                .unwrap_or(false);
+                            if room
+                                && (since.elapsed() >= grace
+                                    || app.message_forced(&run).await.unwrap_or(false))
+                            {
+                                detach = true;
+                                break;
+                            }
+                        } else {
+                            message_since = None;
+                        }
+                        continue;
+                    }
+                };
+                // Dropping the JoinSet aborts outstanding tasks. Durable executing
+                // checkpoints remain authoritative for safe-read/uncertain-write recovery.
+                let (idx, name, pending_id, result) = match completed {
+                    Ok((task_id, result)) => {
+                        identities.remove(&task_id);
+                        result
+                    }
+                    Err(error) => {
+                        let started = identities
+                            .get(&error.id())
+                            .map(|(_, _, _, started)| *started)
+                            .unwrap_or_else(std::time::Instant::now);
+                        let failure = tools::failure::task_error(Some(&error), started);
+                        if let Some((idx, _, pending_id, _)) = identities.remove(&error.id()) {
+                            let _guard = app.handles.gate.lock().await;
+                            let mut current = app.run(id).await?;
+                            if current["generation"] == generation
+                                && current["batch"][idx]["pending"]["id"] == pending_id
+                            {
+                                tools::failure::record(&mut current, &failure, Some(idx));
+                                app.save(&mut current).await?;
+                            }
+                        }
+                        return Err(failure);
+                    }
+                };
+                let _result_guard = app.handles.gate.lock().await;
+                let mut current = app.run(id).await?;
+                if current["generation"] != generation
+                    || current["batch"][idx]["pending"]["id"] != pending_id
+                {
+                    continue;
+                }
+                if let Err(error) = &result {
+                    tools::failure::record(&mut current, error, Some(idx));
+                }
+                // A definite refusal had no effect; it completes as an error, never as uncertain.
+                let refused = if result.is_err() {
+                    tools::failure::refused_before_dispatch(
+                        &current["batch"][idx]["pending"]["failure"],
+                    )
+                } else {
+                    None
+                };
+                let interrupted = refused.is_none()
+                    && match &result {
+                        Ok(value) => {
+                            value["uncertain"] == true
+                                || matches!(
+                                    value["status"].as_str(),
+                                    Some("cancelled" | "timeout" | "uncertain")
+                                )
+                        }
+                        Err(_) => true,
+                    };
+                // A stop or shutdown leaves only a high-risk write for review; otherwise the
+                // agent receives the outcome and the repeat guard records it.
+                if interrupted
+                    && cancel.is_cancelled()
+                    && !tool_execution::settles_on_interrupt::<A>(&name)
+                    && A::retry(&name).risk == tools::retry_guard::Risk::High
+                {
+                    current["batch"][idx]["state"] = json!("uncertain");
+                    current["uncertain"] = json!(true);
+                    current["status"] = json!("recovery");
+                    current["error"] = json!("Parallel write outcome unknown; review each call");
+                } else {
+                    let retry = A::retry(&name);
+                    let value = match result {
+                        Ok(value) => {
+                            current["batch"][idx]["execution_metadata"] =
+                                serde_json::to_value(&value.metadata)?;
+                            value.content
+                        }
+                        Err(error) => match refused.as_ref() {
+                            Some(failure) => tools::failure::refused_result(failure),
+                            // The cause is the only evidence of why a read was cut off.
+                            None if A::is_read(&name) => json!({
+                                "status":"error",
+                                "error_kind":"interrupted",
+                                "output":interrupted_text(&error)
+                            }),
+                            None => tools::retry_guard::outcome_unknown(&retry),
+                        },
+                    };
+                    if refused.is_none() {
+                        let pending = current["batch"][idx]["pending"].clone();
+                        let call_id = pending["call_id"].as_str().unwrap_or("").to_owned();
+                        tools::retry_guard::record(
+                            &mut current,
+                            &name,
+                            &pending["arguments"],
+                            &call_id,
+                            Some(&value),
+                            &retry,
+                        );
+                    }
+                    current["batch"][idx]["result"] = value;
+                    current["batch"][idx]["state"] = json!("done");
+                    if current["status"] == "recovery" && uncertain_count(&current) == 0 {
+                        current["uncertain"] = json!(false);
+                        current["status"] = json!("stopped");
+                    }
+                }
+                // STORAGE-RESULT-COMMIT: a completed write is durable before the
+                // next future is awaited, so recovery only reviews unresolved calls.
+                app.save(&mut current).await?;
+            }
+            if detach && !identities.is_empty() {
+                Self::detach_batch(app, id, generation, identities, tokens, futures).await?;
+            }
+            let _approval_guard = app.handles.gate.lock().await;
+            let mut current = app.run(id).await?;
+            if current["generation"] != generation
+                || current["status"] != "running"
+                || uncertain_count(&current) > 0
+                || cancel.is_cancelled()
+            {
+                return Ok(());
+            }
+            if let Some(item) = current["batch"]
+                .as_array()
+                .expect("batch checkpoint is an array")
+                .iter()
+                .find(|item| item["state"] == "waiting")
+            {
+                current["pending"] = item["pending"].clone();
+                current["pending"]["state"] = json!("waiting");
+                if current["pending"]["waiting_since"].is_null() {
+                    current["pending"]["waiting_since"] = json!(crate::now());
+                }
+                current["status"] = json!("waiting_approval");
+                let mut payload = current["pending"].clone();
+                payload["run_id"] = json!(id);
+                app.store
+                    .save_run(&mut current, "approval_required", &payload)
+                    .await?;
+            }
+            return Ok(());
+        }
+        if let Some(item) = run["batch"]
+            .as_array()
+            .expect("batch checkpoint is an array")
+            .iter()
+            .find(|item| item["state"] == "waiting")
+        {
+            run["pending"] = item["pending"].clone();
+            run["pending"]["state"] = json!("waiting");
+            if run["pending"]["waiting_since"].is_null() {
+                run["pending"]["waiting_since"] = json!(crate::now());
+            }
+            run["status"] = json!("waiting_approval");
+            let mut payload = run["pending"].clone();
+            payload["run_id"] = json!(id);
+            app.store
+                .save_run(&mut run, "approval_required", &payload)
+                .await?;
+            return Ok(());
+        }
+        if run["batch"]
+            .as_array()
+            .expect("batch checkpoint is an array")
+            .iter()
+            .all(|item| item["state"] == "done")
+        {
+            // STORAGE-ORDER: save one output at a time. The store indexes the last
+            // appended output of each save; call_index makes restart idempotent.
+            for idx in saved_index as usize..calls.len() {
+                let item = run["batch"][idx].clone();
+                run["pending"] = item["pending"].clone();
+                run["workflow"]["receipts"]["pre_tool"] = item["pre_tool_receipt"].clone();
+                if !item["execution_metadata"].is_null() {
+                    let metadata = serde_json::from_value(item["execution_metadata"].clone())?;
+                    tools::outcome::stage(&mut run, &metadata)?;
+                }
+                Self::append_tool(&mut run, &item["result"])?;
+                let call_id = item["pending"]["call_id"]
+                    .as_str()
+                    .expect("batch call has a call_id");
+                let result_receipt = run["workflow"]["receipts"]["tool_result"].clone();
+                run["workflow"]["batch_receipts"][call_id] = json!({
+                    "pre_tool":item["pre_tool_receipt"],"tool_result":result_receipt,
+                });
+                app.store.save_run(&mut run,"tool_result",
+                &json!({"run_id":id,"name":item["pending"]["name"],"result":item["result"]})).await?;
+            }
+            run["batch"] = Value::Null;
+            run["phase"] = json!("model");
+            app.save(&mut run).await?;
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::oneshot;
+    use tokio::sync::Mutex;
+
+    fn contending_calls(
+        gate: Arc<Mutex<()>>,
+    ) -> (Vec<BoxFuture<'static, usize>>, oneshot::Sender<()>) {
+        let (held_tx, held_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let ready: BoxFuture<'static, usize> = Box::pin(async move {
+            held_rx.await.unwrap();
+            1
+        });
+        let holding: BoxFuture<'static, usize> = Box::pin(async move {
+            let guard = gate.lock().await;
+            held_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            drop(guard);
+            2
+        });
+        (vec![ready, holding], release_tx)
+    }
+
+    #[tokio::test]
+    async fn parent_polled_calls_reproduce_result_commit_deadlock() {
+        let gate = Arc::new(Mutex::new(()));
+        let (calls, release) = contending_calls(gate.clone());
+        let mut calls: FuturesUnordered<_> = calls.into_iter().collect();
+        assert_eq!(calls.next().await, Some(1));
+        release.send(()).unwrap();
+        // A woken child owns the gate, but next() is no longer polling it.
+        assert!(tokio::time::timeout(Duration::from_millis(50), gate.lock())
+            .await
+            .is_err());
+        drop(calls);
+        assert!(tokio::time::timeout(Duration::from_secs(1), gate.lock())
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn parallel_result_commit_allows_gate_owner_to_finish() {
+        let gate = Arc::new(Mutex::new(()));
+        let (calls, release) = contending_calls(gate.clone());
+        let mut calls = spawn_batch_calls(calls);
+        assert_eq!(calls.join_next().await.unwrap().unwrap(), 1);
+        release.send(()).unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(1), gate.lock())
+            .await
+            .expect("result commit must not starve the gate owner");
+        drop(guard);
+        assert_eq!(calls.join_next().await.unwrap().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn dropping_parallel_calls_aborts_gate_owner() {
+        let gate = Arc::new(Mutex::new(()));
+        let (calls, _release) = contending_calls(gate.clone());
+        let mut calls = spawn_batch_calls(calls);
+        assert_eq!(calls.join_next().await.unwrap().unwrap(), 1);
+        drop(calls);
+        assert!(tokio::time::timeout(Duration::from_secs(1), gate.lock())
+            .await
+            .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod denial_tests {
+    use super::*;
+
+    #[test]
+    fn an_interrupted_read_keeps_its_cause() {
+        assert_eq!(
+            interrupted_text(&"provider session ended".to_string()),
+            "Tool interrupted: provider session ended"
+        );
+        assert_eq!(interrupted_text(&String::new()), "Tool interrupted");
+        let long = "x".repeat(400);
+        assert_eq!(
+            interrupted_text(&long).chars().count(),
+            "Tool interrupted: ".len() + 300
+        );
+    }
+
+    #[test]
+    fn denial_message_names_the_refusing_layer() {
+        assert_eq!(
+            denial_message(access::Reason::Hidden, false),
+            "Tool invocation denied: this tool is switched off for this agent or session"
+        );
+        assert_eq!(
+            denial_message(access::Reason::RoleDenied, false),
+            "Tool invocation denied: this tool is not available to your role on this agent"
+        );
+        assert!(denial_message(access::Reason::RoleDenied, true)
+            .contains("arguments must be a JSON object"));
+    }
+}

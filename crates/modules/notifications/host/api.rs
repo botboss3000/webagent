@@ -1,0 +1,780 @@
+//! Installation-admin event reads; the assistant uses this feed through outbound polling.
+//! Reader-credential, connection-cap and cursor rules live in `webagent_notifications`; this
+//! root-bound adapter supplies the HTTP handlers, App/Store, account checks and the relay and
+//! retention service loop.
+use axum::extract::{Path, Query};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{Event, KeepAlive};
+use axum::response::{IntoResponse, Response, Sse};
+use axum::Json;
+use serde_json::{json, Value};
+use sqlx::Row;
+use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::time::Duration;
+use webagent_accounts_host::AccountsStore;
+use webagent_notifications::connections::{AcquireError, Connection};
+use webagent_notifications::cursor::{self, Args, Bounds};
+use webagent_notifications::readers::{self, ReaderBody};
+
+use crate::{access, bad, conflict, now, Api, ApiError, App, State};
+
+/// Count one security event of `kind`; record an administrator alert when it reaches its
+/// live threshold. Recording runs in the background so the request is not delayed.
+pub(crate) fn alert(app: &App, kind: &'static str) {
+    let Some(raised) = webagent_notifications::alerts::hit(kind, now()) else {
+        return;
+    };
+    tracing::warn!(target: "security", kind, count = raised.count, "administrator alert");
+    let pool = app.store.app_pool.clone();
+    tokio::spawn(async move {
+        if webagent_notifications::alerts::deliver(&pool, &raised, now() as i64)
+            .await
+            .is_err()
+        {
+            tracing::error!("Administrator alert not recorded");
+        }
+    });
+}
+
+/// The Notifications page: newest alerts, unread count and the live configuration.
+pub(super) async fn alerts(State(app): State<App>) -> Api {
+    let mut page = webagent_notifications::alerts::list(&app.store.app_pool, 200)
+        .await
+        .map_err(|_| bad("Alerts unavailable"))?;
+    page["config"] = webagent_notifications::alerts::Config::live().view();
+    Ok(Json(page))
+}
+
+/// Mark one alert (`{"id": n}`) or every unread alert (`{}`) as read.
+pub(super) async fn read_alerts(State(app): State<App>, Json(body): Json<Value>) -> Api {
+    let id = match body.get("id") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_i64().ok_or_else(|| bad("Invalid alert"))?),
+    };
+    let marked = webagent_notifications::alerts::mark_read(&app.store.app_pool, id, now() as i64)
+        .await
+        .map_err(|_| bad("Alerts unavailable"))?;
+    Ok(Json(json!({"marked": marked})))
+}
+
+/// Hold one event-read connection slot for `identity`.
+fn connection(identity: &Value) -> std::result::Result<Connection, ApiError> {
+    Connection::acquire(
+        identity["_auth_key"].as_str().unwrap_or(""),
+        identity["_user_id"].as_str().unwrap_or(""),
+    )
+    .map_err(|error| match error {
+        AcquireError::MissingCredential => bad(&error.to_string()),
+        AcquireError::LimitReached => ApiError(StatusCode::TOO_MANY_REQUESTS, error.to_string()),
+    })
+}
+
+/// Validated read bounds.
+fn bounds(args: &Args) -> std::result::Result<Bounds, ApiError> {
+    cursor::bounds(args).map_err(|error| bad(&error.to_string()))
+}
+
+/// The identity of a live event-reader bearer token on an event read route, if any.
+///
+/// Event-reader credentials are hashed, sealed, revocable, and limited to these two GET
+/// routes. This is deliberately separate from the message-submission bearer API.
+pub(crate) async fn bearer_identity(
+    app: &App,
+    method: &axum::http::Method,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<Value> {
+    if *method != axum::http::Method::GET || !readers::reader_route(path) {
+        return None;
+    }
+    let token = headers
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    if !readers::hex64(token) {
+        return None;
+    }
+    let key = readers::key(&readers::reader_id(token));
+    let mut identity = app.store.get(&key).await.ok()??;
+    identity["_auth_key"] = json!(key);
+    identity["_user_id"] = identity["user_id"].clone();
+    if valid(app, &identity).await {
+        Some(identity)
+    } else {
+        None
+    }
+}
+/// Issue a reader credential owned by the caller; the token is returned once.
+pub(super) async fn issue_reader(
+    State(app): State<App>,
+    axum::Extension(identity): axum::Extension<Value>,
+    Json(body): Json<ReaderBody>,
+) -> Api {
+    if !readers::valid_lifetime(body.expires_in) {
+        return Err(bad("Reader expiration must be 60 seconds to 90 days"));
+    }
+    let _guard = app.gate.lock().await;
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM docs WHERE key LIKE 'notification_reader:%'")
+            .fetch_one(&app.store.app_pool)
+            .await
+            .map_err(anyhow::Error::from)?;
+    if count >= readers::MAX_READERS {
+        return Err(conflict(
+            "Event reader credential limit reached; revoke unused readers",
+        ));
+    }
+    let user = identity["_user_id"]
+        .as_str()
+        .ok_or_else(|| bad("Reader owner required"))?;
+    let account = app
+        .store
+        .account_by_id(user)
+        .await?
+        .ok_or_else(|| bad("Reader owner unavailable"))?;
+    let token = readers::new_token();
+    let id = readers::reader_id(&token);
+    let record = json!({"user_id":user,"generation":account["generation"],"created_at":now(),"expires":now()+body.expires_in});
+    sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+        .bind(readers::key(&id))
+        .bind(app.store.seal(&record)?)
+        .execute(&app.store.app_pool)
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(Json(
+        json!({"id":id,"token":token,"expires":record["expires"],"scope":readers::SCOPE,
+            "max_connections":webagent_notifications::connections::MAX_PER_CREDENTIAL}),
+    ))
+}
+/// List reader credentials without their tokens.
+pub(super) async fn readers(State(app): State<App>) -> Api {
+    let rows = sqlx::query(
+        "SELECT key,value FROM docs WHERE key LIKE 'notification_reader:%' ORDER BY key LIMIT 64",
+    )
+    .fetch_all(&app.store.app_pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+    let mut readers = Vec::new();
+    for row in rows {
+        let doc = app.store.unseal(&row.get::<Vec<u8>, _>("value"))?;
+        readers.push(json!({"id":row.get::<String,_>("key").trim_start_matches(readers::KEY_PREFIX),
+            "user_id":doc["user_id"],"created_at":doc["created_at"],"expires":doc["expires"],"scope":readers::SCOPE}));
+    }
+    Ok(Json(json!({"readers":readers})))
+}
+/// Revoke reader credential `id`.
+pub(super) async fn revoke_reader(State(app): State<App>, Path(id): Path<String>) -> Api {
+    if !readers::hex64(&id) {
+        return Err(bad("Invalid event reader ID"));
+    }
+    sqlx::query("DELETE FROM docs WHERE key=?")
+        .bind(readers::key(&id))
+        .execute(&app.store.app_pool)
+        .await
+        .map_err(anyhow::Error::from)?;
+    Ok(Json(json!({"revoked":true})))
+}
+
+/// Whether `identity`'s credential and its administrator account are still live.
+async fn valid(app: &App, identity: &Value) -> bool {
+    let Some(key) = identity["_auth_key"].as_str() else {
+        return false;
+    };
+    let Some(user) = identity["_user_id"].as_str() else {
+        return false;
+    };
+    let auth_live = if key.starts_with(readers::KEY_PREFIX) {
+        // Reader credentials retain their resource owner's lifecycle.
+        app.store.get(key).await.ok().flatten().is_some_and(|doc| {
+            doc["expires"].as_u64().unwrap_or(0) > now()
+                && doc["generation"] == identity["generation"]
+                && doc["user_id"].as_str().unwrap_or("admin") == user
+        })
+    } else {
+        app.store
+            .accounts_repository()
+            .session_reference_live(key, user, &identity["generation"], now())
+            .await
+            .unwrap_or(false)
+    };
+    let account = app.store.account_by_id(user).await.ok().flatten();
+    auth_live
+        && account.as_ref().is_some_and(|account| {
+            account["generation"] == identity["generation"]
+                && account["is_approved"] == true
+                && access::Principal::from_account(account)
+                    .is_ok_and(|p| p.active() && p.administrator())
+        })
+}
+/// Long-poll one outbox page after the cursor.
+pub(super) async fn read(
+    State(app): State<App>,
+    axum::Extension(identity): axum::Extension<Value>,
+    Query(args): Query<Args>,
+) -> std::result::Result<Response, ApiError> {
+    let Bounds { since, limit, wait } = bounds(&args)?;
+    let _connection = connection(&identity)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait);
+    loop {
+        if !valid(&app, &identity).await {
+            return Err(ApiError(
+                StatusCode::UNAUTHORIZED,
+                "Event credential revoked or expired".into(),
+            ));
+        }
+        let page = app.store.notification_page(since, limit).await?;
+        if page["error"] == "cursor_expired" {
+            return Ok((StatusCode::GONE, Json(page)).into_response());
+        }
+        let events = page["events"]
+            .as_array()
+            .expect("a page that is not cursor_expired lists events");
+        if !events.is_empty() || tokio::time::Instant::now() >= deadline {
+            if !valid(&app, &identity).await {
+                return Err(ApiError(
+                    StatusCode::UNAUTHORIZED,
+                    "Event credential revoked or expired".into(),
+                ));
+            }
+            return Ok(Json(page).into_response());
+        }
+        tokio::select! {
+            _=app.stop.cancelled()=>return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE,"Event service stopping".into())),
+            _=tokio::time::sleep_until(deadline.min(tokio::time::Instant::now()+Duration::from_millis(500)))=>{}
+        }
+    }
+}
+/// Stream outbox events as SSE from the cursor or `Last-Event-ID`.
+pub(super) async fn stream(
+    State(app): State<App>,
+    axum::Extension(identity): axum::Extension<Value>,
+    headers: HeaderMap,
+    Query(args): Query<Args>,
+) -> std::result::Result<Response, ApiError> {
+    let Bounds {
+        mut since, limit, ..
+    } = bounds(&args)?;
+    if let Some(header) = headers.get("last-event-id") {
+        let value = header
+            .to_str()
+            .ok()
+            .and_then(cursor::last_event_id)
+            .ok_or_else(|| bad("Invalid Last-Event-ID"))?;
+        since = since.max(value);
+    }
+    let connection = connection(&identity)?;
+    if !valid(&app, &identity).await {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "Event credential revoked or expired".into(),
+        ));
+    }
+    let initial = app.store.notification_page(since, limit).await?;
+    if initial["error"] == "cursor_expired" {
+        return Ok((StatusCode::GONE, Json(initial)).into_response());
+    }
+    let queue: VecDeque<Value> = initial["events"]
+        .as_array()
+        .expect("a page that is not cursor_expired lists events")
+        .iter()
+        .cloned()
+        .collect();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3600);
+    let stream = futures_util::stream::unfold(
+        (app, identity, since, queue, connection, deadline, false),
+        move |(app, identity, mut cursor, mut queue, connection, deadline, closed)| async move {
+            if closed {
+                return None;
+            }
+            loop {
+                if app.stop.is_cancelled()
+                    || tokio::time::Instant::now() >= deadline
+                    || !valid(&app, &identity).await
+                {
+                    return None;
+                }
+                if let Some(row) = queue.pop_front() {
+                    cursor = row["seq"].as_i64().expect("outbox events carry a sequence");
+                    let event = Event::default()
+                        .id(cursor.to_string())
+                        .event(row["type"].as_str().expect("outbox events carry a type"))
+                        .data(row.to_string());
+                    return Some((
+                        Ok::<Event, Infallible>(event),
+                        (app, identity, cursor, queue, connection, deadline, false),
+                    ));
+                }
+                let page = app.store.notification_page(cursor, limit).await.ok()?;
+                if page["error"] == "cursor_expired" {
+                    let event = Event::default()
+                        .event("cursor_expired")
+                        .data(page.to_string());
+                    return Some((
+                        Ok(event),
+                        (app, identity, cursor, queue, connection, deadline, true),
+                    ));
+                }
+                queue = page["events"].as_array()?.iter().cloned().collect();
+                if queue.is_empty() {
+                    tokio::select! {_=app.stop.cancelled()=>return None,
+                    _=tokio::time::sleep(Duration::from_millis(500))=>{}}
+                }
+            }
+        },
+    );
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response())
+}
+
+/// The relay and retention loop: relay every user's staging rows each second, prune each
+/// minute.
+///
+/// One API-owned relay; run emission still belongs to the independent loop's transactions.
+/// Store methods are the only permitted route to user state.
+pub(crate) async fn service(app: App) {
+    let mut last_pruned = 0;
+    loop {
+        if app.stop.is_cancelled() {
+            break;
+        }
+        match app.store.scan_user_ids().await {
+            Ok(ids) => {
+                for id in ids {
+                    if app.stop.is_cancelled() {
+                        break;
+                    }
+                    let result = async {
+                        let store = app.store.for_user(&id).await?;
+                        store.relay_notifications().await?;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    .await;
+                    if result.is_err() {
+                        tracing::error!("Notification relay deferred");
+                    }
+                }
+            }
+            Err(_) => tracing::error!("Notification owner scan deferred"),
+        }
+        if now().saturating_sub(last_pruned) >= 60 {
+            if app.store.prune_notifications(now() as i64).await.is_err() {
+                tracing::error!("Notification retention deferred");
+            }
+            let retention = webagent_notifications::alerts::Config::live().retention_days;
+            if webagent_notifications::alerts::prune(&app.store.app_pool, now() as i64, retention)
+                .await
+                .is_err()
+            {
+                tracing::error!("Administrator alert retention deferred");
+            }
+            last_pruned = now();
+        }
+        tokio::select! {_=app.stop.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The workspace has no clippy.toml with `allow-unwrap-in-tests` yet.
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::{digest, uuid};
+    use axum::body::Body;
+    use axum::extract::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    async fn credential(app: &App) -> (String, Value) {
+        let token = uuid();
+        let key = format!("auth:{}", digest(&json!(token)));
+        let account = app.store.account_by_id("admin").await.unwrap().unwrap();
+        let doc = json!({"user_id":"admin","generation":account["generation"],"expires":now()+3600,"csrf":"fixture"});
+        app.store.put(&key, &doc).await.unwrap();
+        let mut identity = doc;
+        identity["_auth_key"] = json!(key);
+        identity["_user_id"] = json!("admin");
+        (format!("v3_session={token}"), identity)
+    }
+    #[tokio::test]
+    async fn outbox_admin_auth_bounds_backfill_and_stream() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let (cookie, identity) = credential(&app).await;
+        let route = crate::api::router(app.clone());
+        let response = route
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/admin/events?wait=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for uri in [
+            "/api/v3/admin/events?since=-1",
+            "/api/v3/admin/events?wait=31",
+            "/api/v3/admin/events?limit=201",
+        ] {
+            let response = route
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("cookie", &cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        app.store
+            .put("session:s", &json!({"id":"s","agent_id":"shared_default"}))
+            .await
+            .unwrap();
+        let mut tx = app.store.pool.begin().await.unwrap();
+        app.store
+            .stage_notification(&mut tx, "created:s", "session.created", "s", None, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        app.store.relay_notifications().await.unwrap();
+        let response = route
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/admin/events?since=0&wait=0")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let page: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page["events"][0]["type"], "session.created");
+        let response = route
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/admin/events/stream?since=0")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let frame = response
+            .into_body()
+            .frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap();
+        assert!(String::from_utf8(frame.to_vec())
+            .unwrap()
+            .contains("event: session.created"));
+        app.store
+            .prune_notifications(now() as i64 + webagent_notifications::RETENTION_SECONDS + 1)
+            .await
+            .unwrap();
+        let response = route
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/admin/events?since=0&wait=0")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::GONE);
+        app.store
+            .delete(identity["_auth_key"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert!(!valid(&app, &identity).await);
+    }
+    #[tokio::test]
+    async fn connection_caps_release_and_nonadmin_rejection() {
+        let identity = json!({"_auth_key":uuid(),"_user_id":uuid()});
+        let mut connections = Vec::new();
+        for _ in 0..4 {
+            connections.push(connection(&identity).unwrap());
+        }
+        assert!(matches!(
+            connection(&identity),
+            Err(ApiError(StatusCode::TOO_MANY_REQUESTS, _))
+        ));
+        connections.pop();
+        assert!(connection(&identity).is_ok());
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let (cookie, identity) = credential(&app).await;
+        let mut account = app.store.account_by_id("admin").await.unwrap().unwrap();
+        account["role"] = json!("user");
+        account["tier_id"] = json!("free");
+        sqlx::query("UPDATE user_accounts SET value=? WHERE user_id='admin'")
+            .bind(app.store.seal(&account).unwrap())
+            .execute(&app.store.app_pool)
+            .await
+            .unwrap();
+        assert!(!valid(&app, &identity).await);
+        let response = crate::api::router(app)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/admin/events?wait=0")
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn event_reader_scope_and_live_revocation() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let (_cookie, identity) = credential(&app).await;
+        let reader = issue_reader(
+            State(app.clone()),
+            axum::Extension(identity),
+            Json(ReaderBody { expires_in: 3600 }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let bearer = format!("Bearer {}", reader["token"].as_str().unwrap());
+        let route = crate::api::router(app.clone());
+        let request = |uri: &str| {
+            Request::builder()
+                .uri(uri)
+                .header("authorization", &bearer)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let response = route
+            .clone()
+            .oneshot(request("/api/v3/admin/events?wait=0"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = route
+            .clone()
+            .oneshot(request("/api/v3/sessions"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let _ = revoke_reader(
+            State(app.clone()),
+            Path(reader["id"].as_str().unwrap().to_owned()),
+        )
+        .await
+        .unwrap();
+        let response = route
+            .oneshot(request("/api/v3/admin/events?wait=0"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    #[tokio::test]
+    async fn long_poll_wakes_and_disconnect_releases_capacity() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let (_cookie, identity) = credential(&app).await;
+        let polling = tokio::spawn(read(
+            State(app.clone()),
+            axum::Extension(identity.clone()),
+            Query(Args {
+                since: Some(0),
+                limit: None,
+                wait: Some(3),
+            }),
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        app.store
+            .put("session:s", &json!({"id":"s","agent_id":"shared_default"}))
+            .await
+            .unwrap();
+        let mut tx = app.store.pool.begin().await.unwrap();
+        app.store
+            .stage_notification(&mut tx, "created:s", "session.created", "s", None, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        app.store.relay_notifications().await.unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(2), polling)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = stream(
+            State(app.clone()),
+            axum::Extension(identity.clone()),
+            HeaderMap::new(),
+            Query(Args {
+                since: Some(1),
+                limit: None,
+                wait: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let mut connections = Vec::new();
+        for _ in 0..3 {
+            connections.push(connection(&identity).unwrap());
+        }
+        assert!(connection(&identity).is_err());
+        drop(response);
+        assert!(connection(&identity).is_ok());
+    }
+    #[tokio::test]
+    async fn emission_follows_committed_lifecycle_and_terminal_publication() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let sid = crate::create_session(
+            State(app.clone()),
+            Json(json!({"client_request_id":"notification-lifecycle"})),
+        )
+        .await
+        .unwrap()
+        .0["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let body =
+            json!({"client_message_id":"notification-message","text":"private fixture text"});
+        let result = crate::send(State(app.clone()), Path(sid.clone()), Json(body.clone()))
+            .await
+            .unwrap();
+        let _ = crate::send(State(app.clone()), Path(sid.clone()), Json(body))
+            .await
+            .unwrap();
+        let rid = result.1 .0["run_id"].as_str().unwrap().to_owned();
+        let mut run = app.run(&rid).await.unwrap();
+        assert!(app
+            .store
+            .claim_run(&mut run, "fixture", "generation-notification")
+            .await
+            .unwrap());
+        run["status"] = json!("waiting_approval");
+        run["pending"] = json!({"id":"approval-1","state":"waiting"});
+        app.store
+            .save_run(&mut run, "approval_required", &json!({"secret":"excluded"}))
+            .await
+            .unwrap();
+        app.store
+            .save_run(&mut run, "approval_required", &json!({"secret":"excluded"}))
+            .await
+            .unwrap();
+        run["status"] = json!("queued");
+        app.store
+            .save_run_override(&mut run, "run_status", &json!({}))
+            .await
+            .unwrap();
+        assert!(app
+            .store
+            .claim_run(&mut run, "fixture", "generation-resume")
+            .await
+            .unwrap());
+        let policy = crate::workflow::Policy::resolve(None).unwrap();
+        let output = vec![
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"final fixture reply"}]}),
+        ];
+        crate::publication::terminal(
+            &app.store,
+            &mut run,
+            &output,
+            "final fixture reply",
+            &policy,
+        )
+        .await
+        .unwrap();
+        crate::publication::terminal(
+            &app.store,
+            &mut run,
+            &output,
+            "final fixture reply",
+            &policy,
+        )
+        .await
+        .unwrap();
+        app.store.relay_notifications().await.unwrap();
+        let page = app.store.notification_page(0, 200).await.unwrap();
+        let kinds: Vec<&str> = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "session.created",
+                "message.received",
+                "run.started",
+                "run.waiting_approval",
+                "run.completed"
+            ]
+        );
+        assert!(!page.to_string().contains("private fixture text"));
+        assert!(!page.to_string().contains("secret"));
+        let (chat, _) = app.store.chat_snapshot(&sid).await.unwrap();
+        assert_eq!(
+            chat.iter().filter(|row| row["role"] == "assistant").count(),
+            1
+        );
+
+        let result = crate::send(
+            State(app.clone()),
+            Path(sid.clone()),
+            Json(
+                json!({"client_message_id":"notification-failure","text":"private failure input"}),
+            ),
+        )
+        .await
+        .unwrap();
+        let failed_id = result.1 .0["run_id"].as_str().unwrap().to_owned();
+        let mut failed = app.run(&failed_id).await.unwrap();
+        assert!(app
+            .store
+            .claim_run(&mut failed, "fixture", "generation-failure")
+            .await
+            .unwrap());
+        failed["status"] = json!("failed");
+        failed["error"] = json!("private provider error");
+        app.store
+            .save_run(&mut failed, "run_status", &json!({}))
+            .await
+            .unwrap();
+        app.store
+            .save_run_override(&mut failed, "run_status", &json!({}))
+            .await
+            .unwrap();
+        app.store.relay_notifications().await.unwrap();
+        let page = app.store.notification_page(0, 200).await.unwrap();
+        assert_eq!(
+            page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["type"] == "run.failed" && row["run_id"] == failed_id)
+                .count(),
+            1
+        );
+        assert!(!page.to_string().contains("private provider error"));
+        let (chat, _) = app.store.chat_snapshot(&sid).await.unwrap();
+        assert_eq!(
+            chat.iter()
+                .filter(|row| row["role"] == "assistant" && row["run_id"] == failed_id)
+                .count(),
+            0
+        );
+    }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "recall_compacted",
+  "description": "List this session's compacted segments or page a compacted segment or read result.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit_chars": {
+        "maximum": 4096,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "limit_items": {
+        "maximum": 20,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "offset_chars": {
+        "maximum": 2000000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "offset_items": {
+        "maximum": 4096,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "segment_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      },
+      "tool_call_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "core": true,
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

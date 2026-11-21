@@ -1,0 +1,48 @@
+{
+  "name": "file_search",
+  "description": "Search container or live-checkout files by literal or regex query, or ask a plain-language question with find.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      },
+      "find": {
+        "type": "boolean"
+      },
+      "regex": {
+        "type": "boolean"
+      },
+      "file_glob": {
+        "type": "string"
+      },
+      "comments_only": {
+        "type": "boolean"
+      },
+      "task_id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{8,80}$",
+        "description": "Deprecated compatibility alias. Prefer broker_id; do not supply both. Never use a chat session ID here."
+      },
+      "broker_id": {
+        "type": "string",
+        "pattern": "^(new|[A-Za-z0-9_-]{8,80})$",
+        "description": "Omit to continue current broker work; new creates independent isolated work in this operation; reuse a returned Broker ID to switch. Session identity is automatic. Never invent an ID."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

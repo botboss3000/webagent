@@ -1,0 +1,57 @@
+{
+  "name": "staff_message_send",
+  "description": "Leave a message for staff to follow up with the visitor's contact details and request.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "email": {
+        "maxLength": 200,
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "question",
+          "booking",
+          "callback",
+          "feedback",
+          "other"
+        ],
+        "type": "string"
+      },
+      "message": {
+        "maxLength": 2000,
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 120,
+        "type": "string"
+      },
+      "phone": {
+        "maxLength": 40,
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "kind",
+      "message"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "leave a message for staff to call back",
+      "take the visitor's contact details"
+    ],
+    "keywords": [
+      "leave message",
+      "callback"
+    ]
+  }
+}

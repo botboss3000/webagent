@@ -1,0 +1,44 @@
+{
+  "name": "get_weather",
+  "description": "Current Open-Meteo weather by city or lat,lon; no API key required",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "location": {
+        "maxLength": 256,
+        "minLength": 1,
+        "type": "string"
+      },
+      "units": {
+        "enum": [
+          "metric",
+          "imperial"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "location"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "what is the weather in Berlin",
+      "will it rain tomorrow"
+    ],
+    "keywords": [
+      "weather",
+      "forecast"
+    ]
+  }
+}

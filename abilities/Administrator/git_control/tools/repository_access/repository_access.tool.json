@@ -1,0 +1,33 @@
+{
+  "name": "repository_access",
+  "description": "Report current-agent repository configuration and bounded GitHub metadata; never prints credentials or infers push permission from token presence",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "verify_remote": {
+        "type": "boolean"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which GitHub repository is configured",
+      "can I push to the repo"
+    ],
+    "keywords": [
+      "github",
+      "repository"
+    ]
+  }
+}

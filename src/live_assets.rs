@@ -1,0 +1,243 @@
+//! Immutable publication snapshots. Only the protected broker switches current.
+use crate::*;
+use std::sync::OnceLock;
+/// Administrator tool schemas from the tool folders under a catalog root
+/// (`abilities`), normalized for the model. A missing or invalid folder leaves
+/// only its own tool out; release validation refuses any such problem.
+pub(crate) fn native_schemas_for_catalog(
+    root: &std::path::Path,
+    _publication: bool,
+) -> Result<Vec<Value>> {
+    #[cfg(feature = "administrator")]
+    let schemas = webagent_administration::schemas::load(root)?.schemas;
+    // Without the Administrator tier no catalog carries Administrator schemas.
+    #[cfg(not(feature = "administrator"))]
+    let schemas = {
+        let _ = root;
+        Vec::new()
+    };
+    Ok(crate::tools::normalize_native_schemas(schemas))
+}
+
+pub(crate) fn published_root() -> Option<PathBuf> {
+    published_root_at(&PathBuf::from(std::env::var_os("V3_UI_ROOT")?)).ok()
+}
+fn published_root_at(ui: &std::path::Path) -> Result<PathBuf> {
+    webagent_configuration::prompts::published_root_at(ui)
+}
+/// Explicit call snapshots and configured publication are authoritative; only an unconfigured installation uses packaged defaults.
+fn default_source(source: Option<&std::path::Path>) -> Result<Option<PathBuf>> {
+    webagent_configuration::prompts::default_source(source)
+}
+
+/// Main Chat guidance semantics are Chat-owned; the host supplies the installed defaults directory.
+pub(crate) fn main_chat_prompts(root: &std::path::Path) -> Result<Value> {
+    webagent_chat::configuration::main_chat_prompts_at(root, None, &fallback_directory())
+}
+/// Atomically acknowledge the revision actually held by an API or loop catalog.
+pub(crate) fn record_adoption(
+    root: &std::path::Path,
+    role: &str,
+    catalog: &abilities::Catalog,
+) -> Result<()> {
+    let Some(selected) = published_root() else {
+        return Ok(());
+    };
+    // A catalog holds the selected release either directly or as the live snapshot of
+    // checkout ability edits laid over it (checked against that release before use).
+    let loaded = catalog.snapshot_root();
+    let holds_selected = loaded == selected.join("abilities")
+        || loaded
+            .parent()
+            .and_then(webagent_abilities::live::built_on)
+            .is_some_and(|base| base == selected);
+    if !holds_selected {
+        anyhow::bail!("Catalog adoption not confirmed");
+    }
+    let revision = selected
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow!("Invalid revision"))?;
+    let engine = crate::engine_components::catalog()?;
+    let value = json!({"revision":revision,"catalog_version":catalog.version(),"engine_revision":engine.revision});
+    let dir = root.join("publication");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{role}.json"));
+    if std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        == Some(value.clone())
+    {
+        return Ok(());
+    }
+    let mut file = tempfile::NamedTempFile::new_in(&dir)?;
+    file.write_all(&serde_json::to_vec(&value)?)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(anyhow::Error::from)?;
+    Ok(())
+}
+/// Read authoritative published defaults from `source`, or immutable packaged defaults when
+/// publication is not configured.
+pub(crate) fn prompt_defaults_at(source: Option<&std::path::Path>) -> Result<Vec<u8>> {
+    webagent_configuration::prompts::prompt_defaults_at(source, &fallback_directory())
+}
+/// The live prompts, assembled from their Markdown files.
+pub(crate) fn resolved_prompts(root: &std::path::Path) -> Result<Value> {
+    resolved_prompts_at(root, None)
+}
+/// The prompts of a pinned candidate `source`, or the live files.
+pub(crate) fn resolved_prompts_at(
+    root: &std::path::Path,
+    source: Option<&std::path::Path>,
+) -> Result<Value> {
+    webagent_configuration::prompts::resolved_prompts_at(root, source, &fallback_directory())
+}
+/// Cache only validated immutable revisions; selected source errors remain errors.
+pub(crate) fn catalog(fallback: &Arc<abilities::Catalog>) -> Result<Arc<abilities::Catalog>> {
+    static CACHE: OnceLock<webagent_abilities::CatalogCache<abilities::NativeHost>> =
+        OnceLock::new();
+    CACHE
+        .get_or_init(webagent_abilities::CatalogCache::default)
+        .current(fallback)
+}
+
+/// The root test crate supplies its own source fixture directory explicitly.
+pub(crate) fn fallback_directory() -> PathBuf {
+    if cfg!(test) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config")
+    } else {
+        PathBuf::from("/usr/local/share/webagent/defaults")
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod native_schema_file_tests {
+    use super::*;
+    /// A source root whose Administrator tool folders are copies of the checked-in ones,
+    /// all gathered under the `native_tools` folder.
+    pub(crate) fn source_fixture() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("abilities/Administrator");
+        let target = root
+            .path()
+            .join("abilities/Administrator/native_tools/tools");
+        // Without the optional Administrator pack there are no tool folders to copy.
+        let Ok(abilities) = std::fs::read_dir(&checkout) else {
+            return root;
+        };
+        let file =
+            |tool: &std::fs::DirEntry| format!("{}.tool.json", tool.file_name().to_string_lossy());
+        for ability in abilities.flatten() {
+            let Ok(tools) = std::fs::read_dir(ability.path().join("tools")) else {
+                continue;
+            };
+            for tool in tools
+                .flatten()
+                .filter(|tool| tool.path().join(file(tool)).is_file())
+            {
+                let folder = target.join(tool.file_name());
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::copy(tool.path().join(file(&tool)), folder.join(file(&tool))).unwrap();
+            }
+        }
+        root
+    }
+    fn definition(root: &std::path::Path, name: &str) -> PathBuf {
+        root.join("abilities/Administrator/native_tools/tools")
+            .join(name)
+            .join(format!("{name}.tool.json"))
+    }
+    pub(crate) fn change_parameter(root: &std::path::Path) {
+        let path = definition(root, "build_work");
+        let mut tool: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_ne!(tool["parameters"]["properties"]["limit"]["maximum"], 123);
+        tool["parameters"]["properties"]["limit"]["maximum"] = json!(123);
+        std::fs::write(&path, serde_json::to_vec(&tool).unwrap()).unwrap();
+    }
+    #[test]
+    #[cfg_attr(not(administrator_pack), ignore = "needs the Administrator pack")]
+    fn parameter_change_versions_the_catalog_and_rejects_the_stale_snapshot() {
+        let root = source_fixture();
+        let plugins = root.path().join("abilities");
+        let catalog = crate::abilities::Catalog::load_current(&plugins).unwrap();
+        assert!(catalog.native_snapshot_current().unwrap());
+        change_parameter(root.path());
+        let fresh = crate::abilities::Catalog::load_current(&plugins).unwrap();
+        assert_ne!(
+            catalog.version(),
+            fresh.version(),
+            "Administrator parameters identify the catalog"
+        );
+        assert!(!catalog.native_snapshot_current().unwrap());
+        assert!(fresh.native_snapshot_current().unwrap());
+        let schema = fresh
+            .all_schemas()
+            .into_iter()
+            .find(|s| s["name"] == "build_work")
+            .unwrap();
+        assert_eq!(schema["parameters"]["properties"]["limit"]["maximum"], 123);
+    }
+    #[test]
+    #[cfg(feature = "administrator")]
+    #[cfg_attr(not(administrator_pack), ignore = "needs the Administrator pack")]
+    fn an_invalid_folder_withdraws_only_its_tool() {
+        let root = source_fixture();
+        let plugins = root.path().join("abilities");
+        let path = definition(root.path(), "build_work");
+        for bytes in [
+            b"not-json".to_vec(),
+            b"{}".to_vec(),
+            serde_json::to_vec(&json!({"name":"other"})).unwrap(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let catalog = crate::abilities::Catalog::load_current(&plugins).unwrap();
+            let names: Vec<Value> = catalog
+                .all_schemas()
+                .into_iter()
+                .map(|s| s["name"].clone())
+                .collect();
+            assert!(!names.contains(&json!("build_work")));
+            assert!(names.contains(&json!("performance_work")));
+            let loaded = webagent_administration::schemas::load(&plugins).unwrap();
+            assert!(
+                !loaded.problems.is_empty(),
+                "release validation sees the problem"
+            );
+        }
+    }
+    #[test]
+    #[cfg_attr(not(administrator_pack), ignore = "needs the Administrator pack")]
+    fn actual_native_catalog_retains_owner_action_and_nullable_normalization() {
+        let root = source_fixture();
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(definition(root.path(), "build_work")).unwrap())
+                .unwrap();
+        assert_eq!(
+            raw["parameters"]["properties"]["sync_decision"]["type"],
+            "string"
+        );
+        let catalog =
+            crate::abilities::Catalog::load_current(&root.path().join("abilities")).unwrap();
+        let schemas = catalog.all_schemas();
+        let build = schemas.iter().find(|s| s["name"] == "build_work").unwrap();
+        assert_eq!(
+            build["parameters"]["properties"]["sync_decision"]["type"],
+            json!(["string", "null"])
+        );
+        assert!(build["parameters"]["properties"]["sync_decision"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::Null));
+        assert_eq!(
+            build["parameters"]["properties"]["action"]["type"],
+            "string"
+        );
+        // Former ledger tools now use the repeat guard and no longer carry `_action`.
+        let guarded = schemas
+            .iter()
+            .find(|s| s["name"] == "prompt_slot_write")
+            .unwrap();
+        assert!(guarded["parameters"]["properties"]["_action"].is_null());
+    }
+}

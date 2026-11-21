@@ -1,0 +1,34 @@
+{
+  "name": "python",
+  "description": "Execute Python in this session workspace; policy-gated.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "code": {
+        "type": "string"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "retention": {
+    "output": "log",
+    "tail_lines": 40
+  },
+  "repeat_guard": {
+    "risk": "low"
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

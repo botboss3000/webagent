@@ -1,0 +1,178 @@
+// Browser regressions for the real dropdown modules, component JSON and shared presentation.
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const UI=path.resolve(__dirname,'../../..'),shared=UI;
+/** Serve real isolated source to a networkless browser with deterministic private-session fixtures. */
+async function fixture(t,{mobile=false}={}) {
+ const html='<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/shared/shared/css/design-system.css"><link rel="stylesheet" href="/shared/shell/layout.css"><link rel="stylesheet" href="/shared/chat/chat-resize/chat-resize.css"><link rel="stylesheet" href="/shared/chat/controls/session-dropdown/session-list.css"><link rel="stylesheet" href="/shared/chat/chat-shared.css"><link rel="stylesheet" href="/shared/shared/models/model-menu.css"><link rel="stylesheet" href="/shared/shell/header.css"><link rel="stylesheet" href="/shared/shared/models/delete-control.css"><link rel="stylesheet" href="/shared/shared/search-field/search-field.css"><link rel="stylesheet" href="/shared/main-panel/agents/pages/sessions/sessions-search.css"><link rel="stylesheet" href="/shared/main-panel/account/account.css"><link rel="stylesheet" href="/shared/chat/panel.css"><link rel="stylesheet" href="/shared/chat/header.css"><link rel="stylesheet" href="/shared/chat/composer-footer.css"><link rel="stylesheet" href="/shared/chat/composer-above.css"><link rel="stylesheet" href="/shared/chat/composer.css"><link rel="stylesheet" href="/shared/chat/controls/footer-controls.css"><link rel="stylesheet" href="/shared/chat/core/messages.css"><link rel="stylesheet" href="/shared/chat/core/turns.css"><link rel="stylesheet" href="/shared/chat/core/markdown.css"><link rel="stylesheet" href="/shared/chat/core/zoom-chip.css"><link rel="stylesheet" href="/shared/chat/controls/session-dropdown/menu.css"><link rel="stylesheet" href="/ui/chat/chat.css"><style>body{margin:0}#chat-panel{width:100%;height:100vh}#chat-header{position:fixed;top:20px;left:12px;width:340px}#session-dropdown{width:320px;min-height:40px}#session-dropdown-trigger{display:flex;width:100%;align-items:center}</style><main id="chat-panel">'+fs.readFileSync(path.join(UI,'chat/chat.html'),'utf8')+'</main>';
+ const server=http.createServer((req,res)=>{
+  const u=new URL(req.url,'http://localhost').pathname;
+  if(u==='/'){res.setHeader('content-type','text/html');return res.end(html);}
+  const root=u.startsWith('/shared/')?shared:UI;
+  const p=path.resolve(root,u.replace(/^\/(?:ui|shared)\//,''));
+  if(!p.startsWith(root+path.sep)){res.writeHead(403);return res.end();}
+  fs.readFile(p,(err,b)=>{res.writeHead(err?404:200,{'content-type':p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':p.endsWith('.json')?'application/json':'text/plain'});res.end(err?'missing':b);});
+ });
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
+ const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1280,height:900},hasTouch:mobile,isMobile:mobile});const page=await context.newPage();
+ t.after(async()=>{await browser.close();await new Promise(r=>server.close(r));});
+ await page.goto('http://127.0.0.1:'+server.address().port+'/');
+ await page.evaluate(async()=>{
+  const {mountSessionDropdown}=await import('/ui/chat/controls/session-dropdown/controller.js');
+  const {createSessionList}=await import('/ui/chat/controls/session-dropdown/list.js');
+  const cfg=await import('/ui/chat/controls/session-dropdown/config.js');await cfg.loadSessionDropdownConfig();window.cfg=cfg;
+  window.config=cfg.sessionDropdownConfig('chat_desktop');window.selectedCalls=[];window.writes=[];window.refreshes=0;
+  const root=document.querySelector('#session-dropdown');
+  window.items=Array.from({length:18},(_,i)=>({id:'s'+i,title:'Session '+i,agent_id:'shared_default',last_active_at:123,metadata_revision:1,status:'active'}));
+  window.controller=mountSessionDropdown(root,{refresh:async()=>{refreshes++;list.update(items,window.fixtureSelected||'s0');},select:id=>selectedCalls.push(id),guard:fn=>fn,resetSearch:()=>list.reset()});
+  window.list=createSessionList(root,{guard:fn=>fn,refresh:async()=>{refreshes++;},select:id=>selectedCalls.push(id),client:{firstMessage:async id=>({text:id==='s0'?'Hi, can you help me with the release':'You are tasked with '+id}),sessions:async status=>({sessions:status==='active'?items:[{...items[0],id:'archived',status:'archived'}]}),patch:async(id,body)=>{writes.push({id,body});return {session:{...items[0],title:body.title}};}}});
+  list.configure(config);list.update(items,'s0');
+ });
+ return page;
+}
+/** Await the controller's deferred refresh rather than inspecting its loading skeleton. */
+async function openList(page){await page.locator('#session-dropdown-trigger').click();await page.locator('.session-dropdown-rows .session-row').first().waitFor();}
+/** Apply a full profile to exercise live renderer options without modifying source files. */
+async function configure(page,changes){await page.evaluate(changes=>{for(const [k,v]of Object.entries(changes))config[k]={...config[k],...v};list.configure(config);},changes);}
+test('JSON owns trigger, rows, independent menu actions, optional More and footer visibility',async t=>{
+ const p=await fixture(t);assert.equal(await p.locator('#session-dropdown-kebab').isVisible(),false);
+ await p.locator('#session-dropdown-trigger').click({button:'right'});
+ assert.equal(await p.locator('.session-row-actions button').count(),9);assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+ await p.keyboard.press('Escape');assert.equal(await p.locator('.session-row-actions').count(),0);
+ await configure(p,{menu:{pinning:false,auto_rename:false,open_in_widget:false,refresh:false,start_scratchpad:false,archive:false,agent_id:false,session_id:false},footer:{enabled:false},trigger:{agent_icon:false,session_name:false,status:false,row_actions:true}});
+ assert.equal(await p.locator('#session-dropdown-icon').isVisible(),false);assert.equal(await p.locator('#session-dropdown-label').isVisible(),false);assert.equal(await p.locator('#session-dropdown-status').isVisible(),false);
+ await p.locator('#session-dropdown-kebab').click();assert.deepEqual(await p.locator('.session-row-actions button').allTextContents(),[' Rename session']);
+ await p.keyboard.press('Escape');await openList(p);assert.equal(await p.locator('.session-manage-row').count(),0);
+ await configure(p,{menu:{default_rows:3,agent_icons:false,session_name:false,status:false,row_actions:true},footer:{enabled:true,search:false,archived:false,hidden_sessions:false,batch_archive:true}});
+ assert.equal(await p.locator('.session-row-agent-icon').count(),1);assert.equal(await p.locator('.session-manage-row button').count(),1);assert.equal(await p.locator('.session-manage-search-input').count(),0);
+ assert.equal(await p.locator('.session-row-kebab:visible').count(),19);
+ const geometry=await p.locator('.session-dropdown-rows').evaluate(e=>({height:e.clientHeight,scroll:e.scrollHeight,three:[...e.children].slice(0,3).reduce((s,r)=>s+r.getBoundingClientRect().height,0)}));
+ assert(geometry.scroll>geometry.height);assert(Math.abs(geometry.height-geometry.three)<2,JSON.stringify(geometry));
+ await configure(p,{menu:{max_height:'160px'}});await p.waitForTimeout(420);assert(await p.locator('#session-dropdown-menu').evaluate(e=>e.getBoundingClientRect().height)<=162);assert(await p.locator('.session-manage-row').isVisible());
+ await configure(p,{menu:{max_height:'min(66vh, 640px)'}});
+ await configure(p,{trigger:{agent_icon:true,session_name:true,status:true,row_actions:false},menu:{session_name:true,row_actions:false}});
+ await p.locator('.session-row[data-id="s3"]').click({button:'right'});await p.locator('.session-row-actions button').click();
+ const input=p.locator('.session-row-title-input');await input.fill('Renamed by fixture');await input.press('Enter');
+ assert.equal(await p.evaluate(()=>writes[0].body.title),'Renamed by fixture');assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+});
+test('keyboard action menu, footer selections and hiding an active footer reset transient state',async t=>{
+ const p=await fixture(t);await p.locator('#session-dropdown-trigger').focus();await p.keyboard.press('Shift+F10');await p.locator('.session-row-actions').waitFor();await p.keyboard.press('Escape');
+ await openList(p);await p.getByRole('button',{name:'Enable checkbox mode',exact:true}).click();await p.locator('.session-row[data-id="s2"]').click();assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+ await configure(p,{footer:{enabled:false}});assert.equal(await p.locator('.session-row-checkbox').count(),0);
+ await configure(p,{footer:{enabled:true}});await p.getByRole('button',{name:'Archived',exact:true}).click();await p.locator('.session-row.archived').waitFor();
+ await configure(p,{menu:{unarchive:false,delete:false}});assert.equal(await p.locator('.session-row.archived button').count(),0);
+ await configure(p,{footer:{enabled:false}});assert.equal(await p.locator('.session-row.archived').count(),0);
+});
+test('long press opens once, suppresses navigation, cancels on movement and teardown on mobile',async t=>{
+ const p=await fixture(t,{mobile:true});await configure(p,{gestures:{long_press_ms:250}});
+ const trigger=p.locator('#session-dropdown-trigger');
+ await trigger.dispatchEvent('pointerdown',{pointerType:'touch',pointerId:1,isPrimary:true,clientX:20,clientY:30});await p.waitForTimeout(320);
+ assert.equal(await p.locator('.session-row-actions').count(),1);
+ await trigger.dispatchEvent('pointerup',{pointerType:'touch',pointerId:1});await trigger.dispatchEvent('click');assert.equal(await p.locator('#session-dropdown-menu').isVisible(),false);
+ await p.keyboard.press('Escape');await p.waitForTimeout(1000);
+ await trigger.dispatchEvent('pointerdown',{pointerType:'touch',pointerId:2,isPrimary:true,clientX:20,clientY:30});await p.locator('body').dispatchEvent('pointermove',{pointerType:'touch',pointerId:2,clientX:80,clientY:30});await p.waitForTimeout(320);assert.equal(await p.locator('.session-row-actions').count(),0);
+ await openList(p);const row=p.locator('.session-row[data-id="s1"]');await row.dispatchEvent('pointerdown',{pointerType:'touch',pointerId:3,isPrimary:true,clientX:30,clientY:90});await p.waitForTimeout(320);assert.equal(await p.locator('.session-row-actions').count(),1);
+ const held=await p.locator('.session-row-actions').boundingBox();assert.ok(Math.abs(held.x-30)<=1&&Math.abs(held.y-90)<=1,JSON.stringify(held));
+ await row.dispatchEvent('click');assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+ await p.keyboard.press('Escape');await row.dispatchEvent('pointerdown',{pointerType:'touch',pointerId:4,isPrimary:true,clientX:30,clientY:90});await p.evaluate(()=>{list.destroy();controller.destroy();});await p.waitForTimeout(320);assert.equal(await p.locator('.session-row-actions').count(),0);
+});
+test('right-click opens the row action panel at the pointer and keeps it inside the viewport',async t=>{
+ const p=await fixture(t);await openList(p);
+ const row=p.locator('.session-row[data-id="s3"]'),box=await row.boundingBox();
+ await row.click({button:'right',position:{x:40,y:10}});
+ const menu=p.locator('.session-row-actions');await menu.waitFor();
+ const rect=await menu.boundingBox(),point={x:box.x+40,y:box.y+10};
+ assert.ok(Math.abs(rect.x-point.x)<=1&&Math.abs(rect.y-point.y)<=1,JSON.stringify({rect,point}));
+ assert.ok(rect.y>40,'the panel must not stay parked in the top-left corner');
+ assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+ // A press at the viewport's bottom-right edge pulls the panel fully back inside it.
+ await p.keyboard.press('Escape');
+ assert.equal(await p.locator('.session-row-actions').count(),0);
+ await p.evaluate(()=>document.querySelector('.session-row[data-id="s17"]').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:1276,clientY:896})));
+ await p.locator('.session-row-actions').waitFor();
+ const edge=await p.locator('.session-row-actions').boundingBox();
+ assert.ok(edge.x>=4&&edge.y>=4&&edge.x+edge.width<=1280&&edge.y+edge.height<=900,JSON.stringify(edge));
+});
+test('the first press inside the dropdown dismisses the row action panel',async t=>{
+ const p=await fixture(t);await openList(p);
+ const row=p.locator('.session-row[data-id="s3"]'),box=await row.boundingBox();
+ await row.click({button:'right',position:{x:box.width-8,y:12}});
+ const panel=p.locator('.session-row-actions');await panel.waitFor();
+ await panel.click({position:{x:3,y:3}});
+ assert.equal(await p.locator('.session-row-actions').count(),1,'a press on the panel itself keeps it open');
+ await p.locator('.session-manage-search-input').click();
+ assert.equal(await p.locator('.session-row-actions').count(),0,'the first press inside the dropdown closes the panel');
+ assert.equal(await p.locator('#session-dropdown-menu').isVisible(),true,'the dropdown itself stays open');
+ assert.equal(await p.locator('.session-manage-search-input').evaluate(n=>n===document.activeElement),true);
+});
+test('configuration deep-merges surface overlays without consulting legacy chat settings',async t=>{
+ const p=await fixture(t);await p.route('**/session-dropdown.json',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({common:{menu:{rename:true,delete:true},footer:{enabled:true}},mobile:{menu:{delete:false},footer:{enabled:false}}})}));
+ const value=await p.evaluate(async()=>{await cfg.loadSessionDropdownConfig();return cfg.sessionDropdownConfig('chat_mobile');});assert.deepEqual(value,{menu:{rename:true,delete:false},footer:{enabled:false}});
+ await p.route('**/session-dropdown.json',route=>route.fulfill({status:503,body:'unavailable'}));assert.deepEqual(await p.evaluate(async()=>{await cfg.loadSessionDropdownConfig();return cfg.sessionDropdownConfig('chat_mobile');}),value);
+});
+
+test('renamed Main Chat keeps rename and hides archive and delete across trigger, menu and batch selection',async t=>{
+ const p=await fixture(t);await p.evaluate(()=>{items[0]={...items[0],title:'Renamed coordinator',main_chat:true,can_delete:false};list.update(items,'s0');});
+ await configure(p,{trigger:{archive:true,row_actions:true},menu:{rename:true,archive:true,delete:true,row_actions:true}});
+ assert.equal(await p.locator('#session-dropdown-delete').isVisible(),false);
+ await p.locator('#session-dropdown-kebab').click();assert.equal(await p.getByRole('button',{name:'Archive session',exact:true}).count(),0);assert.equal(await p.getByRole('button',{name:'Rename session',exact:true}).count(),1);await p.keyboard.press('Escape');
+ await openList(p);await p.getByRole('button',{name:'Enable checkbox mode',exact:true}).click();assert.equal(await p.locator('.session-row[data-id="s0"] .session-row-checkbox').isDisabled(),true);await p.locator('.session-row[data-id="s0"]').click();assert.equal(await p.evaluate(()=>writes.length),0);
+});
+
+for (const mobile of [false,true]) test(`Main Chat outranks pins and keeps a wavy halo after rename and selection (${mobile?'mobile':'desktop'})`,async t=>{
+ const p=await fixture(t,{mobile});await p.evaluate(()=>{
+  window.fixtureSelected='main';
+  items=[{...items[0],id:'pin',pinned:true,last_active_at:900},{...items[1],id:'recent',title:'Main Chat',last_active_at:999},{...items[2],id:'main',title:'Renamed coordinator',agent_id:'one',main_chat:true,pinned:true,last_active_at:1},{...items[3],id:'main-new',title:'Second agent coordinator',agent_id:'two',main_chat:true,last_active_at:8}];list.update(items,'main');
+ });await openList(p);
+ assert.deepEqual(await p.locator('.session-dropdown-rows .session-row').evaluateAll(rows=>rows.map(r=>r.dataset.id)),['main-new','main','pin','recent']);
+ for(const light of [false,true]){
+  await p.evaluate(light=>document.body.classList.toggle('light-mode',light),light);
+  const ring=await p.locator('[data-id="main"] .session-row-agent-icon').evaluate(n=>{const s=getComputedStyle(n,'::after');return {mask:s.maskImage||s.webkitMaskImage,width:s.width,height:s.height,pointer:s.pointerEvents,background:s.backgroundColor};});
+  assert.match(ring.mask,/data:image\/svg\+xml/);assert.equal(ring.pointer,'none');assert.notEqual(ring.background,'rgba(0, 0, 0, 0)');assert.ok(parseFloat(ring.width)>18);assert.ok(parseFloat(ring.height)>18);
+  assert.equal(await p.locator('[data-id="pin"] .session-row-agent-warning').count(),1);
+  assert.equal(await p.locator('#session-dropdown-icon.session-row-agent-main').count(),1);
+ }
+ await p.evaluate(()=>{items=items.map(item=>item.id==='main'?{...item,pinned:true,title:'Renamed again'}:item);list.update(items,'main');});
+ assert.equal(await p.locator('[data-id="main"] .session-row-agent-warning').count(),0);
+ assert.equal(await p.locator('[data-id="main"] .session-row-agent-main').count(),1);
+ await p.evaluate(()=>list.update(items,'pin'));assert.equal(await p.locator('#session-dropdown-icon.session-row-agent-main').count(),0);assert.equal(await p.locator('#session-dropdown-icon.session-row-agent-warning').count(),1);
+});
+test('sub-agent sessions nest under their parent and the header chip lists the family',async t=>{
+ const p=await fixture(t);
+ assert.equal(await p.locator('#chat-sub-header').evaluate(e=>e.hasAttribute('data-empty')),true);
+ await p.evaluate(()=>{items[1].parent_session_id='s0';items[2].parent_session_id='s1';window.fixtureSelected='s2';list.update(items,'s2');});
+ assert.equal(await p.locator('#chat-sub-header .chip-spawn-menu').textContent(),'Spawns (2)');
+ await openList(p);
+ assert.deepEqual(await p.locator('.session-child-row').evaluateAll(rows=>rows.map(r=>r.dataset.id)),['s1','s2'],'the selected grandchild opens its ancestors');
+ await p.locator('.session-row[data-id="s0"] .sess-title-agent-toggle').click();
+ assert.equal(await p.locator('.session-child-row').count(),0);assert(await p.locator('#session-dropdown-menu').isVisible());assert.equal(await p.evaluate(()=>selectedCalls.length),0);
+ await p.keyboard.press('Escape');
+ await p.locator('#chat-sub-header .chip-spawn-menu').click();
+ assert.deepEqual(await p.locator('.spawn-panel .xl-title').allTextContents(),['Main session','Sub-agent 1','Sub-agent 2']);
+ assert.equal(await p.locator('.spawn-prompt').count(),0,'prompts load only when a row opens');
+ await p.locator('.spawn-panel [data-id="s1"]>.xl-head').click();
+ await p.locator('.spawn-prompt').waitFor();assert.equal(await p.locator('.spawn-prompt').textContent(),'You are tasked with s1');assert.equal(await p.evaluate(()=>selectedCalls.length),0,'opening a row does not navigate');
+ await p.locator('.spawn-panel [data-id="s0"]>.xl-head').click();
+ await p.locator('.spawn-panel [data-id="s0"] .spawn-prompt').click();
+ assert.deepEqual(await p.evaluate(()=>selectedCalls),['s0']);assert.equal(await p.locator('.family-spawn-menu').count(),0);
+ await p.evaluate(()=>{for(const item of items)delete item.parent_session_id;list.update(items,'s0');});
+ assert.equal(await p.locator('#chat-sub-header').evaluate(e=>e.hasAttribute('data-empty')),true);
+});
+test('the open session menu keeps the header row inside a phone viewport',async t=>{
+ const p=await fixture(t,{mobile:true});
+ // Lay the header out like the panel does: full width, without the fixture's fixed widths.
+ await p.evaluate(()=>{const h=document.getElementById('chat-header');h.style.cssText='position:absolute;top:0;left:0;right:0;width:auto';const d=document.getElementById('session-dropdown');d.style.width='';d.style.minHeight='';});
+ const box=()=>p.evaluate(()=>{const chip=document.getElementById('session-dropdown'),plus=document.getElementById('new'),zone=chip.closest('.chat-header-zone');const c=chip.getBoundingClientRect(),n=plus.getBoundingClientRect();return{chip:c.width,plusRight:n.right,plusWidth:n.width,overflowX:getComputedStyle(zone).overflowX,viewport:window.innerWidth};});
+ const closed=await box();
+ assert.equal(closed.overflowX,'visible');
+ assert.ok(closed.plusRight<=closed.viewport+0.5,'closed + ends at '+closed.plusRight+' of '+closed.viewport);
+ await openList(p);
+ // The menu is moved to document.body while open; the row must not reflow because of it.
+ const open=await box();
+ assert.equal(open.overflowX,'visible','opening the menu must not make the session zone a scroller');
+ assert.ok(Math.abs(open.chip-closed.chip)<0.5,'selector widened from '+closed.chip+' to '+open.chip);
+ assert.ok(Math.abs(open.plusWidth-closed.plusWidth)<0.5,'the trailing + must keep its full size');
+ assert.ok(open.plusRight<=open.viewport+0.5,'open + ends at '+open.plusRight+' of '+open.viewport);
+});

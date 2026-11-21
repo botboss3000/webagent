@@ -1,0 +1,90 @@
+{
+  "name": "agent_review",
+  "description": "Explain a grouped tool issue, open an issue, or mark one resolved by a release (administrators only).",
+  "effect": "write",
+  "repeat_guard": {
+    "risk": "none",
+    "hint": "a repeated note for the same group replaces the earlier one, so a retry is harmless"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "tool": {
+        "type": "string",
+        "description": "The issue group's tool name, exactly as reported"
+      },
+      "class": {
+        "type": "string",
+        "description": "The issue group's class: error, denied, uncertain or warning"
+      },
+      "kind": {
+        "type": "string",
+        "description": "The issue group's error kind, exactly as reported"
+      },
+      "template": {
+        "type": "string",
+        "description": "The issue group's message template, exactly as reported"
+      },
+      "note": {
+        "type": "string",
+        "description": "What you were trying to do, what you expected, and what would have prevented the issue, written so someone can fix the cause without reading this conversation"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "note",
+          "open",
+          "resolve"
+        ],
+        "description": "note (default): explain an existing group. open: record an issue no failed call created. resolve: mark a group or issue fixed by a release"
+      },
+      "title": {
+        "type": "string",
+        "description": "For action open: a short title, at most 200 characters"
+      },
+      "detail": {
+        "type": "string",
+        "description": "For action open: what happened, what you expected, and what would prevent it"
+      },
+      "severity": {
+        "type": "string",
+        "enum": [
+          "blocker",
+          "waste",
+          "noise"
+        ],
+        "description": "For action open: blocker stops work, waste costs calls, noise is cosmetic"
+      },
+      "evidence": {
+        "type": "string",
+        "description": "For action open: a measured value a reviewer can check, such as 'prompts 3, notes 0' or 'artifacts 2, delivered 0'. Required: a claim without evidence cannot be verified"
+      },
+      "subject_session_id": {
+        "type": "string",
+        "description": "For action open: the session the issue is about; omit for this session"
+      },
+      "release_id": {
+        "type": "string",
+        "description": "For resolve: the broker job, release or commit that addressed it"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "explain why a tool keeps failing",
+      "mark a tool issue resolved",
+      "open an issue for a problem"
+    ],
+    "keywords": [
+      "issue",
+      "tool failure"
+    ]
+  }
+}

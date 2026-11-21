@@ -1,0 +1,19 @@
+{
+  "name": "read_own_prompt",
+  "description": "Read the current agent's ordered prompt slots and revisions; internal slots are omitted",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

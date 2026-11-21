@@ -1,0 +1,21 @@
+'use strict';
+// Adapted shared reference icon refresh; no v2 auth imports.
+// Refreshes Lucide icons for newly rendered chat content Config: config/ui/chat/chat.json -> chat_common.message_bubbles, chat_common.message_gutters, chat_common.user_message_truncation.
+/** Renders uninitialized Lucide nodes within a host (or the document); renderer errors are contained and processed SVGs lose their marker. */
+export function _refreshLucideIcons(host) {
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try {
+      const scope = host || document;
+      const nodes = Array.from(scope.querySelectorAll('[data-lucide]:not(.lucide)'));
+      if (!nodes.length) return;
+      window.lucide.createIcons({ nodes });
+      // The vendored lucide copies data-lucide onto the svgs it renders (and
+      // renders them document-wide regardless of `nodes`). Remove the marker so
+      // those svgs never match a future [data-lucide] scan again.
+      scope.querySelectorAll('svg[data-lucide].lucide').forEach(function (svg) {
+        svg.removeAttribute('data-lucide');
+      });
+    } catch (_) {}
+  }
+}
+

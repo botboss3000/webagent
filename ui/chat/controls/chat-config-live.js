@@ -1,0 +1,46 @@
+// Refreshes authenticated mounted chats from the live UI configuration endpoint without reload or compilation.
+import {idlePaused} from '../core/idle-pause.js';
+/** Watches visible native chats serially; teardown aborts fetches and prevents stale adoption. */
+export function watchChatConfig({getConfig,onConfig,isMounted,fetchConfig,initial,refreshComponents=async()=>false,onComponents=()=>{}}) {
+  let stopped = false, timer = null, controller = null;
+  // The whole response is compared so agent component overlays adopt too, not only chat_ui.
+  let previous = JSON.stringify(initial);
+  /** Reads the opt-in interval, bounded to prevent accidental request floods. */
+  const interval = () => {
+    const settings = getConfig()?.chat_common?.live_reload;
+    return settings?.enabled === true && typeof settings.interval_ms === 'number' && Number.isFinite(settings.interval_ms)
+      ? Math.max(1000,Math.min(60000,settings.interval_ms)) : null;
+  };
+  /** Queues only one subsequent refresh using the latest adopted settings. */
+  const schedule = () => { const delay = interval(); if (!stopped && delay !== null) timer = setTimeout(refresh,delay); };
+  /** Adopts changed valid documents; failures retain the last usable configuration. */
+  async function refresh() {
+    timer = null;
+    if (stopped) return;
+    if (!isMounted()) { stop(); return; }
+    if (document.hidden || idlePaused() || interval() === null) { schedule(); return; }
+    controller = new AbortController();
+    const active = controller, timeout = setTimeout(() => active.abort(),10000);
+    try {
+      // Component-owned JSON shares this poll so its settings adopt without reload.
+      if (await refreshComponents(active.signal) && !stopped && isMounted()) onComponents();
+      const data = await fetchConfig(active.signal), config = data?.chat_ui || data;
+      if (stopped || !isMounted() || active.signal.aborted || !config?.chat_common || typeof config.chat_common !== 'object' || Array.isArray(config.chat_common)) return;
+      const signature = JSON.stringify(data);
+      if (signature !== previous) { onConfig(data); previous = signature; }
+    } catch { /* Transient reads must not clear settings or interrupt a draft. */ }
+    finally { clearTimeout(timeout); controller = null; schedule(); }
+  }
+  /** Refreshes promptly when the user returns, without overlapping an active request. */
+  function visible() {
+    if (document.hidden || stopped || controller || interval() === null) return;
+    clearTimeout(timer); timer = null; void refresh();
+  }
+  /** Releases this mount's timer/listener and any request; safe to call repeatedly. */
+  function stop() {
+    stopped = true; clearTimeout(timer); controller?.abort();
+    document.removeEventListener('visibilitychange',visible);
+  }
+  document.addEventListener('visibilitychange',visible); schedule();
+  return stop;
+}

@@ -1,0 +1,53 @@
+{
+  "name": "read_session",
+  "description": "Read a session in scope: its status, turn count and a range of turns.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "from": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "to": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "all": {
+        "type": "boolean"
+      },
+      "detail": {
+        "type": "string",
+        "enum": [
+          "brief",
+          "full"
+        ]
+      }
+    },
+    "required": [
+      "session_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "read another session's messages",
+      "what did the sub agent reply"
+    ],
+    "keywords": [
+      "read session"
+    ]
+  }
+}

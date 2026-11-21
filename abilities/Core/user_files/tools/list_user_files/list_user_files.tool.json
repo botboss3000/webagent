@@ -1,0 +1,38 @@
+{
+  "name": "list_user_files",
+  "description": "List private saved-file metadata in bounded pages.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "offset": {
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "list my saved files",
+      "which files have I saved"
+    ],
+    "keywords": [
+      "my files"
+    ]
+  }
+}

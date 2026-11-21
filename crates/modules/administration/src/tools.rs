@@ -1,0 +1,128 @@
+//! The Administrator native tools. Each has a compiled handler and a tool folder under
+//! `abilities/Administrator/<ability>/tools/<tool>/`. The `v3_*` entries are
+//! older build and source names kept only as permission ceilings for Codebase Admin tools.
+//! Tools no ability owns a folder for live under `Administrator/native_tools/`.
+
+/// Every Administrator native tool.
+pub const TOOLS: [&str; 25] = [
+    "git_tool",
+    "resolve_conflict",
+    "commit_and_push",
+    "repository_access",
+    "source_remote_read",
+    "source_remote_commit",
+    "source_site_create",
+    "source_site_status",
+    "source_preview_start",
+    "source_preview_stop",
+    "source_publish",
+    "source_rollback",
+    "terminal_open",
+    "terminal_read",
+    "terminal_send",
+    "terminal_wait",
+    "terminal_list",
+    "terminal_close",
+    "read_diagnostics",
+    "agent_review",
+    "start_tunnel",
+    "get_tunnel_url",
+    "build_work",
+    "performance_work",
+    "host_admin",
+];
+
+/// Codebase Admin package tools whose live-checkout fallback this module also routes.
+pub const CHECKOUT_TOOLS: [&str; 6] = [
+    "file_list",
+    "file_read",
+    "file_search",
+    "file_edit",
+    "file_write",
+    "checkout_edit",
+];
+
+/// Broker requests whose admission pins a renewal record, so the host can keep or revoke
+/// the job's lease while it runs.
+#[must_use]
+pub fn renews(name: &str, action: Option<&str>) -> bool {
+    name == "build_work" && matches!(action, Some("finish" | "decide" | "check"))
+}
+
+/// The authority a broker request is fingerprinted under: finishing or deciding work
+/// needs deployment authority, not just build authority.
+#[must_use]
+pub fn authority_name<'a>(name: &'a str, action: Option<&str>) -> &'a str {
+    match (name, action) {
+        ("build_work", Some("finish" | "decide")) => "build_work_finish",
+        _ => name,
+    }
+}
+
+/// Whether `name` is an Administrator native tool.
+#[must_use]
+pub fn supported(name: &str) -> bool {
+    TOOLS.contains(&name)
+}
+
+/// Whether the optional Administrator pack is installed: any of its tools has a folder
+/// definition in the current catalog root.
+#[must_use]
+pub fn installed() -> bool {
+    TOOLS
+        .iter()
+        .any(|name| webagent_abilities::tool_definitions::get(name).is_some())
+}
+
+/// Administrator tools served by their ability's plugin (`plugin.json`, `requests_v1`)
+/// rather than this module, with that ability's `Group/ability_id` folder.
+pub const PLUGINS: [(&str, &str); 2] = [
+    ("read_diagnostics", "Administrator/diagnostics"),
+    ("agent_review", "Administrator/diagnostics"),
+];
+
+/// The ability folder whose plugin serves `name`, if a plugin does.
+#[must_use]
+pub fn plugin(name: &str) -> Option<&'static str> {
+    PLUGINS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map(|(_, ability)| *ability)
+}
+
+/// Whether this module executes `name`.
+#[must_use]
+pub fn owns(name: &str) -> bool {
+    CHECKOUT_TOOLS.contains(&name) || (supported(name) && plugin(name).is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_names_are_unique_and_disjoint_from_checkout_tools() {
+        let unique: std::collections::BTreeSet<_> = TOOLS.iter().collect();
+        assert_eq!(unique.len(), TOOLS.len(), "duplicate Administrator tool");
+        assert!(
+            CHECKOUT_TOOLS.iter().all(|name| !supported(name)),
+            "checkout tools are package tools, not native schemas"
+        );
+        assert!(owns("checkout_edit") && owns("build_work") && !owns("web_search"));
+    }
+
+    #[test]
+    fn finishing_work_needs_deployment_authority() {
+        assert_eq!(
+            authority_name("build_work", Some("finish")),
+            "build_work_finish"
+        );
+        assert_eq!(
+            authority_name("build_work", Some("decide")),
+            "build_work_finish"
+        );
+        assert_eq!(authority_name("build_work", Some("check")), "build_work");
+        assert!(renews("build_work", Some("check")) && renews("build_work", Some("finish")));
+        assert!(!renews("build_work", Some("status")) && !renews("file_read", None));
+    }
+}

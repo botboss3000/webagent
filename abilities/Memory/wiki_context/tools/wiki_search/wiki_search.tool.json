@@ -1,0 +1,49 @@
+{
+  "name": "wiki_search",
+  "description": "Search the shared server Wiki by keywords; search before answering from or writing to it.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "also": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "maxItems": 8,
+        "description": "Synonyms and alternate phrasings of the query, e.g. for refund: money back, reimbursement, return policy."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "search the wiki",
+      "find wiki articles about billing"
+    ],
+    "keywords": [
+      "wiki search"
+    ]
+  }
+}

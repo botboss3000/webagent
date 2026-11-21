@@ -1,0 +1,53 @@
+{
+  "cache": {
+    "context_budget_bytes": 16777216,
+    "document_budget_bytes": 67108864
+  },
+  "context": {
+    "max_context_bytes": 4194304,
+    "model_profiles": {}
+  },
+  "scheduler": {
+    "background_rescan_interval_ms": 5000,
+    "drain_timeout_seconds": 180,
+    "max_active_runs": 10,
+    "max_attachment_reads": 32,
+    "max_background_workers": 4,
+    "max_media_requests": 8,
+    "max_unresolved_runs": 200,
+    "message_detach_grace_ms": 0,
+    "poll_interval_ms": 300,
+    "recovery_interval_ms": 10000
+  },
+  "schema_version": 2,
+  "tools": {
+    "approval_expiry_seconds": 86400,
+    "max_parallel_calls": 4,
+    "parallel_modes": {
+      "file_list": "concurrent",
+      "file_read": "concurrent",
+      "file_search": "concurrent",
+      "prompt_slot_read": "concurrent",
+      "source_review": "concurrent",
+      "state_inspect": "concurrent"
+    },
+    "scripts": {
+      "max_per_tree": 100,
+      "max_saved": 50,
+      "max_steps": 20
+    }
+  },
+  "workflow": {
+    "max_attempts": 3,
+    "max_publication_bytes": 262144,
+    "max_turns": 0,
+    "modules": {
+      "model_dispatch": [
+        "message_visibility_v1"
+      ],
+      "publication": [
+        "closing_status"
+      ]
+    }
+  }
+}

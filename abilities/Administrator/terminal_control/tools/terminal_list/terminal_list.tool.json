@@ -1,0 +1,28 @@
+{
+  "name": "terminal_list",
+  "description": "List only this session persistent PTYs",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which terminals are open",
+      "list my shell sessions"
+    ],
+    "keywords": [
+      "terminals"
+    ]
+  }
+}

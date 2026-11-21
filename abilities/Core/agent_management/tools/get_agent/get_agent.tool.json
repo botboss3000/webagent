@@ -1,0 +1,35 @@
+{
+  "name": "get_agent",
+  "description": "Read one accessible agent's identity and current revision.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "agent_id": {
+        "maxLength": 128,
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "show details of an agent",
+      "read an agent's identity"
+    ],
+    "keywords": [
+      "agent details"
+    ]
+  }
+}

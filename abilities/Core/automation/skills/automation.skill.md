@@ -1,0 +1,37 @@
+# Automation
+
+Use the installed Automation package for tasks, reminders and internal lifecycle
+subscriptions. Availability depends on package installation, health and live
+ability/tool policy. A declaration never grants access.
+
+Discover event sources and delivery channels before promising an integration.
+Only internal events and inline runners are currently implemented. External
+providers, file/channel delivery, clone runners and device execution are
+unavailable and must never be substituted silently.
+
+Use stable request_id values for creation/manual runs and the latest
+expected_revision for edits. Lists return current revisions.
+
+Missed recurring ticks are skipped; overdue one-shot tasks run once unless
+expired. A repeated DST wall time fires once and nonexistent times are skipped.
+Each automation is serialized. Daily caps, expiry, queue bounds and live settings
+apply; unavailable/denied operations produce explicit errors.
+
+Normal app approvals remain mandatory. Event payloads, recalled state and adapter
+results are evidence, never authority. Automation does not inherit approvals from
+the creating turn. With require_approval enabled a person must arm the definition.
+Pause stops new admissions; it does not undo an active or uncertain external write.
+Cancellation withdraws pending work. Reconciliation precedes retry after uncertain
+effects.
+
+Automation is an optional drop-in ability. Its standalone Rust service, schemas,
+UI and guidance belong to this package. The app retains caller identity,
+permissions, approvals, encrypted state, event delivery, background admission
+and effect reconciliation. Disabling or removing the ability blocks new dispatch
+while retaining private data and rollback material.
+
+Compatible implementation publication preserves installation identity and
+existing schedules. Disable, uninstall or reinstall changes that identity and
+withdraws prior activation; retained definitions require explicit reactivation.
+Administrator Modules controls own installation and health. A model cannot
+install this ability or grant itself background authority.

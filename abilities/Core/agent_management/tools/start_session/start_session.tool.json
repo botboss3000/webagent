@@ -1,0 +1,46 @@
+{
+  "name": "start_session",
+  "description": "Start a separate session in the user's list, by default a fork of this agent.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536
+      },
+      "agent_id": {
+        "type": "string",
+        "maxLength": 128,
+        "description": "Delegate instead of forking: start a fresh session of this saved agent (see list_delegatable_agents). The text is its only context."
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "notify": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "start a separate session",
+      "fork this chat into a new session"
+    ],
+    "keywords": [
+      "new session",
+      "fork"
+    ]
+  }
+}

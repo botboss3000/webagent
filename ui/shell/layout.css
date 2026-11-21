@@ -1,0 +1,150 @@
+/* The page frame: scrollbars, the split stage, the main and chat panel boxes, the phone
+   (chat-only) layout and the active tab panel. Linked early from index.html so component
+   stylesheets after it can refine these boxes. */
+/* ── Scrollbar policy: thumb-only pills (no arrow buttons) ──────────────────
+   Every scrollbar in the app is a thin rounded pill. The tiny up/down (and
+   left/right) arrow buttons at the ends are redundant — too small to click
+   reliably — and get clipped by the app's rounded window corners, so hide
+   them app-wide. Thumb/track styling is untouched; Firefox thin scrollbars
+   never show buttons anyway. */
+::-webkit-scrollbar-button { display: none; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: var(--bg-0);
+    color: var(--fg-1);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* Use dynamic viewport height so mobile browser chrome (address bar,
+       bottom toolbar) doesn't cause the top or bottom of the app to be
+       clipped. --app-height is set from JS via window.visualViewport so
+       the app also shrinks when the mobile on-screen keyboard appears
+       (dvh alone does not shrink for keyboards on Android Chrome).
+       Fallback chain: 100vh → 100dvh → JS-driven --app-height. */
+    height: 100vh;
+    height: 100dvh;
+    height: var(--app-height, 100dvh);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+/* ── Stage: split layout ── */
+  #stage {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+/* ── Left: Main panel ── */
+  #main-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    /* Keep the workspace usable; chat and main now share a 250px desktop floor. */
+    min-width: 250px;
+    position: relative;
+  }
+/* ── Right: Chat panel ── */
+  #chat-panel {
+    /* App Settings → Design may override this desktop default with a safe px or
+       percentage value; a user-dragged inline pixel width remains higher priority. */
+    width: var(--chat-panel-width, 380px);
+    min-width: 250px;
+    display: flex;
+    flex-direction: column;
+    border-left: var(--border-width) solid var(--border);
+    background: var(--bg-1);
+    /* Let chat yield to the workspace as the desktop viewport narrows, down
+       to its usable 250px floor. The main panel only shrinks after that. */
+    flex-shrink: 1;
+    position: relative;
+  }
+/* One header row — has three zone children (left/center/right). */
+
+/* Mobile browsers: the trigger is now a div.session-row. Keep the chip's
+   fixed cross-size so opening the menu cannot make the pill taller. */
+
+/* Below-pill controls share the composer border. This is intentionally scoped
+   to #chat-footer-row so the above-pill activity/progress row stays borderless. */
+#chat-footer-row [data-header-control],
+#chat-footer-row [data-element-origin] {
+  border: var(--border-width) solid color-mix(in oklab, var(--fg-1) 22%, transparent) !important;
+}
+@keyframes chat-refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+#chat-header .sub { color: var(--fg-3); font-weight: 400; font-size: 12px; }
+/* ── Saving / checked feedback ── */
+
+@keyframes cmc-spin {
+    to { transform: rotate(360deg); }
+  }
+
+/* ── Footer drag handle */
+/* Pulse hint — subtle breathe when footer is closed */
+@keyframes footerHandlePulse {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 0.55; }
+  }
+/* ── Chat token bar ──────────────────────────────────────────────────────
+   Sits below the chat pill, left-aligned. Shows tokens-in, a spinning shape
+   during activity, and tokens-out. The spinner animates while the agent is
+   working (chat-activity.visible is set). */
+@keyframes tokenSpinnerSpin {
+    0%   { transform: rotate(45deg); }
+    100% { transform: rotate(405deg); }
+  }
+/* ── TEMPORARY backward-compat copy for static DOM elements ── */
+
+@keyframes chatBubbleGlow { 0%,100%{box-shadow:0 0 0 1px var(--accent-soft),0 0 7px -2px var(--accent-mid)} 50%{box-shadow:0 0 0 1px var(--accent-mid),0 0 13px 0 var(--accent-line)} }
+
+/* ── Main header ── */
+@keyframes pulse {0%,
+100% {opacity:1}50% {opacity:0.3} }
+/* ── Session / Agent dropdown (custom) ───────────────────────── */
+
+/* Loading shimmer animation for unloaded labels */
+@keyframes dropdown-label-shimmer {
+  0% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+  100% { opacity: 0.3; }
+}
+
+/* ── Session dropdown merged panel */
+@keyframes sessionDropdownSkeletonShimmer {
+    from { background-position: 100% 0; }
+    to { background-position: 0 0; }
+}
+
+/* COLOR SCHEME → ui/shared/css/design-system.css (single source of truth).
+   No raw hex/rgb here: use var(--brand) / var(--accent) / var(--accent-hover) for
+   the brand accent, rgba(var(--brand-rgb), a) for any accent opacity, var(--success|
+   warning|danger) (or rgba(var(--*-rgb), a)) for status, var(--purple) for the 2nd hue.
+   Need a colour that doesn't exist yet? Add a token to the palette in design-system.css
+   (the dark :root block AND its body.light-mode twin), then reference it here.
+   Re-theming the whole app (e.g. peach → green) is then a one-file edit. */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+/* ── Responsive ── */
+  /* Keep the desktop split until both panels reach their 250px floors plus the
+     14px divider (514px). Below that, retain the established chat-only mobile
+     view rather than collapsing either desktop panel. */
+  @media (max-width: 514px) {
+    html { overflow: hidden; }
+    #stage { flex-direction: column; }
+    #chat-panel { width: 100%; min-width: 0; border-left: none; border-top: var(--border-width) solid var(--border); flex: 1; min-height: 0; max-height: none; }
+    #main-panel { flex: 1; min-height: 0; }
+    #chat-input-area { touch-action: pan-y; overscroll-behavior: none; }
+    body.chat-visible #main-panel { display: none !important; }
+  }
+
+/* ── Tab panels: only the active one shows ── */
+.tab-content { display: none; flex: 1; min-height: 0; }
+.tab-content.active { display: flex; flex-direction: column; }
+
+/* ── Debug Console Log Panel ─────────────────────────────────────────────── */
+/* Body becomes a flex column so the panel sits below the stage in normal flow,
+   rather than overlay-fixed over the chat footer. html (ui/shell/layout.css) is already
+   display:flex;flex-direction:column — body fills it and passes the flex down. */
+body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+#main-header { flex-shrink: 0; }
+#stage { flex: 1 1 0; min-height: 0; }

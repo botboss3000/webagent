@@ -1,0 +1,41 @@
+{
+  "display_name": "Source Control",
+  "kind": "ability",
+  "icon": "git-branch",
+  "color": "#9ece6a",
+  "description": "Git version control, remote GitHub source editing, and Cloudflare website previews and publishing. Not needed to read or search source code.",
+  "skill_summary": null,
+  "migration_note": "Remote provider tools require user-owned connections. Live GitHub/Cloudflare acceptance is pending; configuration and automated tests do not certify provider access.",
+  "order": 3,
+  "placeholder": false,
+  "tools": [
+    "repository_access",
+    "git_tool",
+    "resolve_conflict",
+    "commit_and_push",
+    "source_remote_read",
+    "source_remote_commit",
+    "source_site_create",
+    "source_site_status",
+    "source_preview_start",
+    "source_preview_stop",
+    "source_publish",
+    "source_rollback"
+  ],
+  "readiness": "ready",
+  "config": {
+    "settings": [
+      {
+        "key": "notify_repo_changes",
+        "label": "Notify me about repo changes",
+        "type": "boolean",
+        "default": false,
+        "hint": "OFF (default) does nothing. ON quietly watches the project in the background and drops a passive heads-up into this agent's chat whenever the saved files stop matching the latest commit (uncommitted edits) or there are local commits that haven't been pushed yet. It only pings when something NEWLY diverges — not the same notice over and over — and the agent takes no action on its own; it's an FYI you can act on or ignore. The notice lands wherever you're chatting with this agent, so you'll see it when that chat is open."
+      }
+    ]
+  },
+  "owner_tier": [
+    "administrator"
+  ],
+  "owner_tier_note": "Hard-coded: Administrator abilities work only for an administrator owner and an administrator caller, whatever this list says."
+}

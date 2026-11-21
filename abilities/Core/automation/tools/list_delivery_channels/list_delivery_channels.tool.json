@@ -1,0 +1,28 @@
+{
+  "name": "list_delivery_channels",
+  "description": "list delivery channels through the optional Automation service. Changes use revision checks; external adapters are unavailable.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "where can automations deliver results",
+      "list delivery channels"
+    ],
+    "keywords": [
+      "delivery channels"
+    ]
+  }
+}

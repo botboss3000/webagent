@@ -1,0 +1,17 @@
+// Connects the native chat surface, floating window, and launcher.
+import {requestTouchVibration} from '../../shared/vibrate/vibrate.js';
+import {widgetProfile,defaultChatDisplay,refreshChatSurface,setChatSurfaceActions} from '../controls/chat-config.js';
+/** Connects the chat panel to its floating window and launcher, persisting the user's docked/floating preference. Injects the shared central vibration callback into both widget lifecycles. Profile changes update both widgets; callbacks keep shell visibility, chat surface config, and launcher actions in sync. */
+export function mountNativeWidget({chat,createFloatingChat,createChatLauncher,onDock,onChange=()=>{},note}){
+ const panel=document.getElementById('chat-panel');let floating=false,launcher,shell,preferred=false;
+ try{preferred=localStorage.getItem('v3.chat.surface')==='floating'}catch{}
+ // Purpose: Persist the chosen docked/floating surface in this browser.
+ const remember=value=>{try{localStorage.setItem('v3.chat.surface',value?'floating':'docked')}catch{}};
+ // Purpose: Synchronize profile selection, visibility event, and global float-button label.
+ function apply(){window.__CHAT_PORTAL__=floating;refreshChatSurface();document.dispatchEvent(new Event('v3:chat-visibility'));document.getElementById('chat-float-btn').textContent=floating?'Floating':'Float';}
+ shell=createFloatingChat({panel,feedback:requestTouchVibration,profile:widgetProfile(),storageKey:'v3.chat.widget.geometry',onMinimize:()=>{launcher.show('minimized');apply();onChange()},onClose:()=>{launcher.show('closed');apply();onChange()},onDock:()=>{floating=false;remember(false);launcher.hide();setChatSurfaceActions({});apply();onDock();}});
+ launcher=createChatLauncher({feedback:requestTouchVibration,profile:widgetProfile(),storageKey:'v3.chat.widget.launcher-draft',onOpen:()=>api.open(),onPickup:text=>chat.setElementContext(text),onAction:async type=>{if(type==='close_all'){shell.close();return}api.open();if(type==='sessions')await chat.showSessions();else if(type==='new_session')await chat.newSession();else if(type!=='open_all')throw Error('Unknown launcher action');},onSend:async text=>{api.open();chat.setDraft(text);try{await chat.send(text)}catch(error){note(error.message);throw error}}});document.body.append(launcher.element);launcher.hide();
+ // Surface API consumed by the app shell; its methods keep persistence, actions, and visibility synchronized.
+ /** Methods: float/open show the shell, hide closes shell and launcher, configure applies profile/default surface, and destroy releases both UI objects. */
+ const api={get floating(){return floating},get isOpen(){return shell.isOpen()},float(){floating=true;remember(true);panel.hidden=false;setChatSurfaceActions({minimize:()=>shell.minimize(),close:()=>shell.close()});shell.open();launcher.hide();apply();onChange();},open(){if(!floating)return api.float();shell.open();launcher.hide();apply();onChange();},hide(){shell.close();launcher.hide();},configure(){const profile=widgetProfile();shell.setProfile(profile);launcher.setProfile(profile);const display=defaultChatDisplay();if(display==="widget"){preferred=false;api.float();shell.close();}else if(display==="panel"){preferred=false;shell.dock();}else if(preferred){preferred=false;api.float()}else if(!floating||shell.isOpen())launcher.hide();},destroy(){launcher.destroy();shell.destroy()}};return api;
+}

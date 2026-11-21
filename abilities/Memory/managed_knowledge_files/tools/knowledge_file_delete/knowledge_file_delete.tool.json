@@ -1,0 +1,36 @@
+{
+  "name": "knowledge_file_delete",
+  "description": "Staff only. Delete a knowledge file using its current revision.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expected_revision": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "file_id": {
+        "maxLength": 64,
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "delete a knowledge file"
+    ],
+    "keywords": [
+      "delete knowledge"
+    ]
+  }
+}

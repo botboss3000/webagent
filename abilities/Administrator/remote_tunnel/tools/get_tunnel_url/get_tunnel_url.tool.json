@@ -1,0 +1,26 @@
+{
+  "name": "get_tunnel_url",
+  "description": "Read this session active preview lease",
+  "effect": "read",
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "what is the preview URL of my app",
+      "show the tunnel link"
+    ],
+    "keywords": [
+      "tunnel url",
+      "preview link"
+    ]
+  }
+}

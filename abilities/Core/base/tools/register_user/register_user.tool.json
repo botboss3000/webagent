@@ -1,0 +1,14 @@
+{
+  "name": "register_user",
+  "description": "Request a private account-registration form in the active browser.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval"
+  }
+}

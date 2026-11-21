@@ -1,0 +1,28 @@
+{
+  "name": "list_event_sources",
+  "description": "list event sources through the optional Automation service. Changes use revision checks; external adapters are unavailable.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which events can trigger automations",
+      "list event sources"
+    ],
+    "keywords": [
+      "event sources"
+    ]
+  }
+}

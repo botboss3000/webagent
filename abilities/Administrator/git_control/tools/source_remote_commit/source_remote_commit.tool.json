@@ -1,0 +1,147 @@
+{
+  "name": "source_remote_commit",
+  "description": "Commit exact UTF-8 file edits on a webagent/ draft branch through GitHub APIs; never publishes production.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "site_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "connection_revision": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "request_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "branch": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "expected_head": {
+        "type": "string",
+        "minLength": 40,
+        "maxLength": 40
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "changes": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 64,
+        "items": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "content": {
+                  "description": "UTF-8 text, or null to delete the file",
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 262144
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "content_base64": {
+                  "description": "Base64 bytes of a small binary file",
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "path",
+                "content_base64"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "attachment_id": {
+                  "description": "A file the user sent in this conversation",
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "path",
+                "attachment_id"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
+    "required": [
+      "site_id",
+      "connection_revision",
+      "request_id",
+      "branch",
+      "expected_head",
+      "message",
+      "changes"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "commit file edits to the draft branch on GitHub",
+      "save site changes on GitHub"
+    ],
+    "keywords": [
+      "github commit",
+      "draft branch"
+    ]
+  },
+  "duplicate_protection": {
+    "key": [
+      "site_id",
+      "branch",
+      "expected_head",
+      "message",
+      "changes"
+    ],
+    "window": "forever"
+  },
+  "critical": true
+}

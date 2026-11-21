@@ -1,0 +1,121 @@
+#![cfg(test)]
+//! Root fixture tests for session mode changes; the tool lives in
+//! `webagent_native_tools::mode`.
+use crate::api;
+use serde_json::json;
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn mode_receipt_and_upgrade_approval_are_run_fenced() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let before = app
+            .store
+            .live_access("admin", "shared_default")
+            .await
+            .unwrap();
+        let mut level = before.capability_level;
+        level
+            .ability_permissions
+            .insert("base".into(), crate::access::Permission::Auto);
+        app.store
+            .save_capability_level(
+                "shared_default",
+                level,
+                app.store
+                    .capability_levels("shared_default")
+                    .await
+                    .unwrap()
+                    .revision,
+            )
+            .await
+            .unwrap();
+        let sid = crate::uuid();
+        app.store
+            .put(
+                &format!("session:{sid}"),
+                &json!({"id":sid,
+            "agent_id":"shared_default","title":"Mode test","created_at":crate::now()}),
+            )
+            .await
+            .unwrap();
+        app.store
+            .put(
+                &format!("session_ability_state:{sid}"),
+                &json!({"revision":1,"active":["base"],"suppressed":[]}),
+            )
+            .await
+            .unwrap();
+        let (mode_revision, visibility, state) = crate::ability_controls(&app, &sid).await.unwrap();
+        let access = app
+            .store
+            .live_access("admin", "shared_default")
+            .await
+            .unwrap();
+        let rid = crate::uuid();
+        let pending_id = crate::uuid();
+        let mut run = json!({"id":rid,"session_id":sid,"agent_id":"shared_default",
+            "status":"running","phase":"tools","generation":"generation-one",
+            "loaded_abilities":["base"],"pending":{"id":pending_id,
+                "name":"set_execution_mode","state":"executing",
+                "mode_revision":mode_revision,
+                "visibility_revision":visibility["revision"],
+                "ability_state_revision":state["revision"],
+                "access_revision":access.revision,"human_approved":false}});
+        app.store.put(&format!("run:{rid}"), &run).await.unwrap();
+        let call = api::ModeCall {
+            run_id: &rid,
+            generation: "generation-one",
+            pending_id: &pending_id,
+        };
+        let first = api::change_session_mode(&app, &sid, "plan", Some(0), Some(call))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(first["revision"], 1);
+        assert_eq!(
+            api::change_session_mode(&app, &sid, "plan", Some(0), Some(call))
+                .await
+                .unwrap()
+                .0,
+            first
+        );
+        let forged = api::ModeCall {
+            run_id: &rid,
+            generation: "stale",
+            pending_id: &pending_id,
+        };
+        assert!(
+            api::change_session_mode(&app, &sid, "plan", Some(0), Some(forged))
+                .await
+                .is_err()
+        );
+        let next_id = crate::uuid();
+        run["pending"]["id"] = json!(next_id);
+        run["pending"]["mode_revision"] = json!(1);
+        app.store.put(&format!("run:{rid}"), &run).await.unwrap();
+        let next = api::ModeCall {
+            run_id: &rid,
+            generation: "generation-one",
+            pending_id: &next_id,
+        };
+        assert!(
+            api::change_session_mode(&app, &sid, "auto", Some(1), Some(next))
+                .await
+                .is_err()
+        );
+        run["pending"]["human_approved"] = json!(true);
+        app.store.put(&format!("run:{rid}"), &run).await.unwrap();
+        assert_eq!(
+            api::change_session_mode(&app, &sid, "auto", Some(1), Some(next))
+                .await
+                .unwrap()
+                .0["revision"],
+            2
+        );
+        assert!(
+            api::change_session_mode(&app, &sid, "auto", Some(1), Some(next))
+                .await
+                .is_ok()
+        );
+    }
+}

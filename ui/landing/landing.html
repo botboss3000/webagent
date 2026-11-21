@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>WebAgent — your own team of AI agents</title>
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/ui/manifest.webmanifest">
+<link rel="stylesheet" href="/ui/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="/ui/shared/css/design-system.css">
+<link rel="stylesheet" href="/ui/landing/landing.css">
+</head>
+<body class="landing">
+<!-- Public landing page served at /; the app lives at /app. Plain HTML and CSS so
+     crawlers read every section. Only advertise features that are ready in v3. -->
+<div class="landing-bg" aria-hidden="true"></div>
+
+<header class="landing-topbar">
+  <a class="landing-brand" href="/"><span class="landing-mark" aria-hidden="true">W</span><span>web<b>Agent</b></span></a>
+  <nav class="landing-nav" aria-label="Primary">
+    <a href="#features">Features</a>
+    <a href="#how-it-works">How it works</a>
+    <a class="btn" href="/app">Sign in</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <span class="eyebrow">Your AI workspace, shaped around you</span>
+    <h1>Turn an idea into an agent that can <em>do the work.</em></h1>
+    <p>WebAgent gives you a private, tool-using AI agent and a live interface for its work. Describe what you need, choose what it can do, and refine it as you go.</p>
+    <div class="actions">
+      <a class="btn btn-primary btn-lg" href="/app">Open WebAgent <span aria-hidden="true">→</span></a>
+      <a class="btn btn-lg" href="#how-it-works">See how it works</a>
+    </div>
+  </section>
+
+  <section class="features" id="features" aria-labelledby="features-title">
+    <div class="section-head">
+      <span class="kicker">Product tour</span>
+      <h2 id="features-title">One workspace for agents that can act.</h2>
+      <p>WebAgent brings conversation, tools and automation into one system you control.</p>
+    </div>
+    <article class="feature">
+      <div><span class="kicker">01 / Conversational agents</span><h3>Chat with agents that actually do the work</h3><p>Agents search the web, work with your files, create and read images, and complete multi-step tasks while every tool call stays visible.</p></div>
+      <img src="/ui/landing/img/chat.webp" alt="WebAgent chat with visible tool calls" width="1600" height="1000" loading="lazy">
+    </article>
+    <article class="feature is-right">
+      <div><span class="kicker">02 / Automations</span><h3>Set it once. It runs itself.</h3><p>Schedule tasks, react to events and have results delivered back to your conversations.</p></div>
+      <img src="/ui/landing/img/automations.webp" alt="WebAgent automations list" width="1600" height="1000" loading="lazy">
+    </article>
+  </section>
+
+  <section class="how" id="how-it-works" aria-labelledby="how-title">
+    <div class="section-head">
+      <span class="kicker">How it works</span>
+      <h2 id="how-title">From idea to working agent in three steps.</h2>
+    </div>
+    <ol class="steps">
+      <li><span class="kicker">01</span><h3>Describe what you need</h3><p>Tell WebAgent in plain language what the agent should do: a research assistant, a dashboard, a recurring report.</p></li>
+      <li><span class="kicker">02</span><h3>Choose its abilities</h3><p>Turn on the tools it can use, from web access and files to a live browser and automations.</p></li>
+      <li><span class="kicker">03</span><h3>Refine it in chat</h3><p>Work with the agent, review its instructions and adjust its workspace as the work evolves.</p></li>
+    </ol>
+  </section>
+
+  <section class="cta-band" aria-labelledby="cta-title">
+    <h2 id="cta-title">Ready to make WebAgent yours?</h2>
+    <p>Open the app and start with the default agent. You can create more agents any time.</p>
+    <a class="btn btn-primary btn-lg" href="/app">Open WebAgent <span aria-hidden="true">→</span></a>
+  </section>
+</main>
+
+<footer class="landing-footer">
+  <a class="landing-brand" href="/"><span class="landing-mark" aria-hidden="true">W</span><span>web<b>Agent</b></span></a>
+  <nav aria-label="Footer">
+    <a href="#features">Features</a>
+    <a href="#how-it-works">How it works</a>
+    <a href="/app">Open WebAgent</a>
+  </nav>
+  <small>© 2026 WebAgent</small>
+</footer>
+</body>
+</html>

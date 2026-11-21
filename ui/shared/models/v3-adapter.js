@@ -1,0 +1,254 @@
+ 'use strict';
+// V3 boundary for the actual reference renderer. No v2 network fallback is allowed.
+export const MISSING = 'Unavailable in v3';
+const reject = detail => { throw Error(MISSING + ': ' + detail); };
+const response = (data,status=200) => new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
+// Descriptive subscription fallback matches discovery, without editing shared catalog grants.
+export function catalogCapabilityFlags(capabilities=[],transport) {
+  const caps=new Set(capabilities);
+  const legacySubscription=transport==='openai_subscription' && caps.size===1 && caps.has('text');
+  return {
+    decision_capable:caps.has('decision'),
+    text_capable:caps.has('text'),
+    image_capable:caps.has('image_in') || legacySubscription,
+    image_out_capable:caps.has('image_out'),
+    voice_capable:caps.has('voice'),
+    video_capable:caps.has('video'),
+  };
+}
+
+// The reference chart and table request v2 usage paths; serve them from v3 usage routes.
+export function usageFetch(base) {
+  const routes={'/admin/settings/model-usage-analytics':'/analytics','/admin/settings/model-usage':'/totals'};
+  return async(path,options={})=>{
+    const url=new URL(path,location.origin),route=routes[url.pathname],method=options.method||'GET';
+    if(!route)return response({detail:MISSING},501);
+    const headers={};
+    if(method!=='GET')headers['x-csrf-token']=(await (await fetch('/api/v3/auth/me',{credentials:'same-origin',cache:'no-store'})).json()).csrf_token;
+    return fetch('/api/v3'+base+route+url.search,{method,headers,credentials:'same-origin',cache:'no-store'});
+  };
+}
+export const usageQuery=({model,entry_id,include_unassigned},extra={})=>new URLSearchParams({model:model||'',entry_id:entry_id||'',include_unassigned:include_unassigned?'1':'',...extra});
+
+export function createModelAdapter(request, agentId, onAssignment) {
+  let data, catalog, account, destroyed=false;
+  // Provider names, models and effort scales come from the server's provider files
+  // (config/models/providers/*.json), read once per page mount.
+  let providerPresets=null;
+  async function presets(){
+    if(!providerPresets){
+      const {providers}=await request('/models/providers');
+      providerPresets=Object.fromEntries(providers.map(p=>[p.provider,{name:p.name,base_url:p.base_url,validated:p.validated,
+        efforts:p.efforts||[],default_effort:p.default_effort||'',models:p.models||[]}]));
+    }
+    return providerPresets;
+  }
+  // A provider file's models stand in until a key or connection returns the live list.
+  const previewModels=async provider=>((await presets())[provider]?.models||[]).map(m=>({id:m.id,name:m.name||m.id,
+    text_capable:true,image_capable:(m.input||[]).includes('image'),...(m.context?{context:m.context}:{}),...(m.max_output?{max_output:m.max_output}:{})}));
+  async function accountChoices(){account=await request('/models/me/catalog');return account;}
+  async function adopt(source,alias){
+    const saved=await request('/models/agents/'+encodeURIComponent(agentId)+'/adoptions','POST',{
+      client_request_id:crypto.randomUUID(),expected_roster_revision:catalog.agent_models?.[agentId]?.revision||0,source,alias});
+    await read();return saved.entry_id;
+  }
+  const statuses=new Map();
+  let queue=Promise.resolve();
+  const drafts=new Map();
+  const scope='/models/catalog?agent_id='+encodeURIComponent(agentId);
+  const vault='/models/agents/'+encodeURIComponent(agentId)+'/credentials';
+  async function read(){
+    if(!agentId) throw Error('Select an authorized agent first');
+    data=await request(scope);catalog=data.catalog;return data;
+  }
+  const rows=()=> (catalog.agent_models?.[agentId]?.entry_ids||[]).map(id=>catalog.entries[id]).filter(Boolean).map(e=>{
+    const c=catalog.connections[e.connection_id];
+    return {entry_id:e.id,connection_id:c.id,catalog_source_id:data.adoptions?.[e.id]?.source_id||(catalog.platform_sources?.[e.id]?'':'byo:'+e.id),provider:c.transport,model:e.upstream_model,display_name:data.adoptions?.[e.id]?.alias||e.display_name,
+      base_url:c.transport==='deepseek'?'https://api.deepseek.com':'codex://chatgpt',api_key:'',
+      ...catalogCapabilityFlags(e.capabilities,c.transport),
+      default_effort:catalog.agent_models?.[agentId]?.efforts?.[e.id]||'',
+      credential_configured:!!statuses.get(c.id)?.connected,
+      credential_email:c.owner_id===data.caller_id ? (statuses.get(c.id)?.account_email||'') : '',
+      catalog_origin:catalog.platform_sources?.[e.id]?'platform':'byo'};
+  });
+  async function save({providers,role_assignments={}}){
+    if(destroyed)throw Error('Models page closed');
+    if(!data.can_manage)throw Error('Agent model management is read-only');
+    for(const p of providers){
+      if((p.provider==='webagent_catalog'||p.provider==='my_models')&&!catalog.entries[p.entry_id]){
+        const choices=await accountChoices();const choice=((p.provider==='my_models'?choices.entries:choices.available_platform_models)||[]).find(c=>c.id===p.entry_id);
+        if(!choice)throw Error('Model choice is no longer available');
+        const alias=p.display_name||choices.aliases?.[choice.id]||choice.display_name;
+        p.entry_id=await adopt({origin:choice.origin,entry_id:choice.id},alias);
+        const entry=catalog.entries[p.entry_id];p.provider=catalog.connections[entry.connection_id].transport;p.model=entry.upstream_model;p.display_name=alias;
+        p.catalog_origin=choice.origin;p.api_key='';
+      } else if(data.adoptions?.[p.entry_id]&&p.display_name!==data.adoptions[p.entry_id].alias){
+        const previous=data.adoptions[p.entry_id];
+        await adopt({origin:previous.origin,entry_id:previous.source_id},p.display_name||p.model);
+      }
+    }
+    const next=structuredClone(catalog);
+    const rowIds=[],efforts={},known=await presets();
+    const cfg=next.agent_models[agentId]??={agent_id:agentId,owner_id:data.agent_owner_id,entry_ids:[],roles:{},revision:1};
+    for(const p of providers){
+      if(p.alias_group_id || p.reference_cost_input!=null || p.reference_cost_output!=null)reject('alias groups and reference pricing');
+      if(!Object.hasOwn(known,p.provider))reject('provider transport');
+      let e=next.entries[p.entry_id];
+      if(!e){
+        if(known[p.provider].validated===false)throw Error(known[p.provider].name+' is not yet validated');
+        const id=p.entry_id||'model-'+crypto.randomUUID(); const connectionId=p.connection_id||drafts.get(id)||'connection-'+crypto.randomUUID();
+        if(p.connection_id){
+          const connection=next.connections[connectionId];
+          if(!connection||connection.owner_id!==data.caller_id||connection.transport!==p.provider||!connection.allowed_agents.includes(agentId)||connection.revoked)throw Error('Subscription connection is unavailable');
+        }
+        next.connections[connectionId]??={id:connectionId,owner_id:data.caller_id,transport:p.provider,credential_ref:'provider_credential:'+crypto.randomUUID(),allowed_agents:[agentId],revision:1,revoked:false};
+        e=next.entries[id]={id,owner_id:data.caller_id,connection_id:connectionId,upstream_model:p.model,display_name:p.display_name||p.model,capabilities:[['decision',!!p.decision_capable],['text',p.text_capable!==false],['image_in',p.image_capable],['image_out',p.image_out_capable],['voice',p.voice_capable],['video',p.video_capable]].filter(([,enabled])=>enabled).map(([name])=>name),allowed_agents:[agentId],revision:1};
+        // Hydrate reference row identity only after the catalog write succeeds below.
+      }else if(data.adoptions?.[e.id]||next.platform_sources?.[e.id]){
+        if(p.api_key)throw Error('Adopted credentials cannot be replaced through the roster');
+      }else if(e.owner_id===data.caller_id){
+        e.display_name=p.display_name||e.upstream_model;
+        e.capabilities=[['decision',!!p.decision_capable],['text',p.text_capable!==false],['image_in',p.image_capable],['image_out',p.image_out_capable],['voice',p.voice_capable],['video',p.video_capable]].filter(([,enabled])=>enabled).map(([name])=>name);
+      }else if(p.display_name!==e.display_name)throw Error('Only the model owner can rename this connection');
+      rowIds.push(e.id);
+      if(p.default_effort)efforts[e.id]=p.default_effort;
+      if(p.api_key && (p.provider==='openai_subscription' || !/^[!-~]{8,512}$/.test(p.api_key)))throw Error('Invalid API key');
+      if(p.api_key && next.connections[e.connection_id].owner_id!==data.caller_id)throw Error('Connection credentials are owner-only');
+      if(!/^[!-~]{1,200}$/.test(p.model))throw Error('Invalid upstream model ID');
+    }
+    // Keep records when a row is removed; roster removal must not revoke a shared credential.
+    cfg.entry_ids=rowIds;
+    cfg.efforts=efforts;
+    const roles={};
+    for(const [role,id] of Object.entries(role_assignments)){
+      if(!id)continue;
+      if(!cfg.entry_ids.includes(id))throw Error('Role is outside this agent roster');
+      const old=cfg.roles[role];
+      // V2's scalar appointment has no per-role backup editor; retain existing v3 backups.
+      roles[role]={entry_id:id,backup_entry_ids:(old?.backup_entry_ids||[]).filter(x=>cfg.entry_ids.includes(x)&&x!==id)};
+    }
+    cfg.roles=roles;
+    const saved=await request(scope,'PUT',next);data=saved;catalog=saved.catalog;
+    providers.forEach((p,i)=>{p.entry_id=cfg.entry_ids[i];p.connection_id=catalog.entries[p.entry_id]?.connection_id||'';p.catalog_source_id=data.adoptions?.[p.entry_id]?.source_id||p.catalog_source_id||'';});
+    await onAssignment?.(agentId,catalog.agent_models?.[agentId]);
+    for(const p of providers){
+      if(p.api_key){
+        const e=catalog.entries[p.entry_id];const c=catalog.connections[e.connection_id];
+        if(c.owner_id!==data.caller_id)throw Error('Connection credentials are owner-only');
+        await request('/models/connections/'+encodeURIComponent(c.id)+'/api-key','PUT',{api_key:p.api_key});
+        p.api_key='';
+      }
+    }
+    // Credential writes advance revisions separately; refresh before the next roster write.
+    await read();return {providers};
+  }
+  const adapter={
+    loadConfig:async()=>{await read();await Promise.all((catalog.agent_models?.[agentId]?.entry_ids||[]).map(async id=>{const c=catalog.connections[catalog.entries[id]?.connection_id];if(c)try{statuses.set(c.id,await request('/models/connections/'+encodeURIComponent(c.id)+'?agent_id='+encodeURIComponent(agentId)));}catch{statuses.delete(c.id);}}));return {provider:'webagent_catalog',roster:rows(),role_assignments:Object.fromEntries(Object.entries(catalog.agent_models?.[agentId]?.roles||{}).map(([r,a])=>[r,a.entry_id]))};},
+    // Owner-only: removes a saved model from My Models and every agent using it.
+    deleteMyModel:id=>request('/models/me/catalog/entries/'+encodeURIComponent(id),'DELETE'),
+    saveRoster:payload=>{const work=()=>save(payload);const result=queue.then(work,work);queue=result.catch(()=>{});return result;},
+    loadPresets:async()=>({webagent_catalog:{name:'WebAgent Catalog',base_url:''},my_models:{name:'My Models',base_url:''},...await presets()}),
+    fetchModels:async({provider,api_key,entry_id})=>{
+      if(provider==='openai_subscription'){
+        const connectionId=catalog.entries[entry_id]?.connection_id||drafts.get(entry_id);
+        if(!connectionId)return {models:await previewModels(provider),preview:true};
+        try{return await request('/models/connections/'+encodeURIComponent(connectionId)+'/models?agent_id='+encodeURIComponent(agentId));}
+        catch(error){
+          if(error.status===428)return {models:await previewModels(provider),preview:true};
+          return {models:[],error:error.message||'Subscription model catalog unavailable'};
+        }
+      }
+      // Provider-file preview; a supplied key always uses live discovery.
+      if(provider==='deepseek'&&!api_key?.trim())return {
+        models:await previewModels(provider),
+        preview:true,preview_message:'Current DeepSeek models. Enter an API key to confirm account access.',
+      };
+      if(provider!=='webagent_catalog'&&provider!=='my_models')return request('/models/discovery','POST',{provider,api_key});
+      // WebAgent Catalog is the platform roster only; My Models is the account's saved BYO models.
+      const choices=await accountChoices();
+      return {models:((provider==='my_models'?choices.entries:choices.available_platform_models)||[]).map(c=>({
+        id:c.id,display_name:choices.aliases?.[c.id]||c.display_name,name:choices.aliases?.[c.id]||c.display_name,catalog_name:c.display_name,
+        ...catalogCapabilityFlags(c.capabilities,c.transport),origin:c.origin}))};
+    },
+    // Context, output maximum and token estimate come only from the live provider file row.
+    fetchModelInfo:async(model,provider)=>{
+      const m=(await presets())[provider]?.models.find(row=>row.id===model);
+      return m?{...(m.context?{context:m.context}:{}),...(m.max_output?{max_output:m.max_output}:{}),
+        ...(m.characters_per_token?{characters_per_token:m.characters_per_token}:{})}:{};
+    },
+    fetchModelUsage:async args=>request('/usage/models/totals?'+usageQuery(args,{agent_id:agentId})).catch(()=>null),
+    loadDirectives:async()=>({standard:'',premium:'',system:'',image_in:'',image_out:'',voice:'',custom:{}}),
+    saveDirectives:async()=>reject('role prompt injections'),
+    saveDefaultEntryId:async(id)=>{
+      const choices=await accountChoices();let sourceId=id;
+      if(id&&catalog.entries[id])sourceId=data.adoptions?.[id]?.source_id||(catalog.platform_sources?.[id]?id:'byo:'+id);
+      if(sourceId?.startsWith('platform:')&&!choices.selected_platform_ids.includes(sourceId)){
+        account=await request('/models/me/catalog','PUT',{revision:choices.revision,selected_platform_ids:[...choices.selected_platform_ids,sourceId],aliases:choices.aliases,default_entry_id:choices.default_entry_id});
+      }
+      account=await request('/models/me/catalog/default','PUT',{expected_revision:account.revision,default_entry_id:sourceId||null});return account;
+    },
+    // Named API keys live in this agent's vault; values come back only to their owner.
+    listCredentials:()=>request(vault),
+    // Bridge providers: clients pair once per provider with one-time codes and serve all of the
+    // caller's models of it; each paired client can be revoked alone.
+    bridgeClients:provider=>request('/models/bridge/'+encodeURIComponent(provider)+'/clients'),
+    pairBridge:provider=>request('/models/bridge/'+encodeURIComponent(provider)+'/pairing','POST'),
+    revokeBridgeClient:(provider,clientId)=>request('/models/bridge/'+encodeURIComponent(provider)+'/clients/'+encodeURIComponent(clientId),'DELETE'),
+    loadCredential:label=>request(vault+'/load','POST',{label}),
+    saveCredential:({label,provider,base_url,api_key})=>request(vault,'PUT',{label,provider,base_url,api_key}),
+    deleteCredential:label=>request(vault,'DELETE',{label}),
+    resetSubscriptionCredentials:async()=>{
+      if(destroyed)throw Error('Models page closed');
+      const result=await request('/models/connections/subscription/reset?agent_id='+encodeURIComponent(agentId),'POST');
+      for(const id of result.connection_ids||[])statuses.set(id,{connected:false});
+      await read();
+      return result.connection_ids||[];
+    },
+    subscriptionRequest:async(path,options={})=>{
+      // The reference control keeps its V2 paths; only this bridge reaches V3.
+      if(destroyed)throw Error('Models page closed');
+      const url=new URL(path,location.origin);const entryId=url.searchParams.get('entry_id');
+      if(url.pathname.endsWith('/model-credentials/validate')){
+        // A key validates when the provider accepts it for model discovery.
+        const {provider,api_key}=JSON.parse(options.body||'{}');
+        try{await request('/models/discovery','POST',{provider,api_key});return response({validated:true});}
+        catch(error){return response({detail:error.message||'Credential validation failed'},400);}
+      }
+      if(url.pathname.endsWith('/login/start')){
+        if(!data.can_manage)throw Error('Read-only agent');
+        const pending=await request('/models/connections/authorization/pending?agent_id='+encodeURIComponent(agentId));
+        if(pending.pending){
+          const id=Object.values(catalog.entries).find(e=>e.connection_id===pending.connection_id)?.id
+            || 'model-'+pending.connection_id;
+          drafts.set(id,pending.connection_id);
+          return response({...pending,entry_id:id});
+        }
+        let connectionId=entryId&&(catalog.entries[entryId]?.connection_id||drafts.get(entryId));
+        let id=entryId;
+        if(!connectionId){
+          id='model-'+crypto.randomUUID();connectionId='connection-'+crypto.randomUUID();
+          const next=structuredClone(catalog);
+          next.connections[connectionId]={id:connectionId,owner_id:data.caller_id,transport:'openai_subscription',credential_ref:'provider_credential:'+crypto.randomUUID(),allowed_agents:[agentId],revision:1,revoked:false};
+          const saved=await request(scope,'PUT',next);data=saved;catalog=saved.catalog;drafts.set(id,connectionId);
+        }
+        if(catalog.connections[connectionId]?.owner_id!==data.caller_id)throw Error('Connection authorization is owner-only');
+        const auth=await request('/models/connections/'+encodeURIComponent(connectionId)+'/authorization','POST');await read();
+        return response({...auth,entry_id:id});
+      }
+      if(url.pathname.endsWith('/login/reset')){
+        const connectionId=catalog.entries[entryId]?.connection_id||drafts.get(entryId);
+        if(!connectionId)return response({reset:true});
+        const result=await request('/models/connections/'+encodeURIComponent(connectionId)+'/authorization/reset','POST');
+        return response(result);
+      }
+      if(url.pathname.endsWith('/auth/status')){
+        const connectionId=catalog.entries[entryId]?.connection_id||drafts.get(entryId);
+        if(!connectionId)return response({chatgpt_authorized:false});
+        const state=await request('/models/connections/'+encodeURIComponent(connectionId)+'?agent_id='+encodeURIComponent(agentId));
+        return response({chatgpt_authorized:state.connected,account:{email:state.account_email||''},authorization:state.authorization});
+      }
+      return response({detail:MISSING+': '+url.pathname},501);
+    }
+  };
+  return {adapter,ready:read,state:()=>data,destroy:()=>{destroyed=true;},blockedFetch:async()=>response({detail:MISSING},501)};
+}

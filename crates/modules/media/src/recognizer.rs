@@ -1,0 +1,862 @@
+//! The shared composer dictation recognizer. One process (`webagent-v3 --voice-service
+//! dictation`, started by `host/voice.rs`) holds the multilingual Parakeet v3 model for every
+//! dictation. Each phrase the Silero pause detector closes is transcribed at once as a live
+//! draft; once a passage of `passage_seconds` of speech ends at a pause, the whole passage is
+//! transcribed again in one piece and replaces its draft, and finish does the same for the last
+//! passage. Transcribing short phrases alone made every thinking pause a sentence end and lost
+//! words the model could not place without context; the passage transcript keeps all audio, so
+//! nothing the detector missed is dropped. The spoken language is detected per transcription.
+//! sherpa-onnx is loaded at run time from the `voice` stage of the Dockerfile, so the workspace
+//! builds and tests without its native libraries.
+//!
+//! Requests arrive one JSON object per line on stdin: `{"op":"open","id":ID}`,
+//! `{"op":"audio","id":ID,"pcm":BASE64}` (16 kHz mono s16le), `{"op":"finish","id":ID}` or
+//! `{"op":"cancel","id":ID}`. Replies are JSON lines on stdout: `{"ready":true}` once the model
+//! has loaded, `{"id":ID,"text":TEXT}` with the transcript so far whenever it changes,
+//! `{"id":ID,"final":TEXT}` for a finished dictation and `{"id":ID,"error":REASON}`. Audio stays
+//! in memory until finish or cancel; nothing is stored and no network is used.
+use std::collections::HashMap;
+use std::ffi::{c_char, c_float, c_void, CStr, CString};
+use std::io::{self, BufRead, Write};
+use std::ops::Range;
+use std::path::Path;
+
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use libloading::Library;
+use serde_json::{json, Value};
+
+use crate::settings;
+
+/// Where the `voice` stage installs `lib/` and `models/`.
+pub const INFERENCE_ROOT: &str = "/opt/inference";
+/// The only sherpa-onnx release whose C layouts [`ffi`] mirrors.
+const LIBRARY_VERSION: &str = "2.0.1";
+const SAMPLE_RATE: i32 = 16000;
+/// Samples the pause detector examines at a time. Audio is handed to it one window at a time:
+/// sherpa-onnx dates a phrase's start from the end of the audio it was just given, so a larger
+/// batch (a backlog the browser sends at once) would cut off the phrase's first words.
+const VAD_WINDOW: usize = 512;
+/// Audio the detector may hold for a phrase in progress, in seconds.
+const VAD_BUFFER_SECONDS: f32 = 60.0;
+
+/// Transcribes one dictation's audio as it arrives.
+pub trait Transcriber {
+    /// One dictation's pause detector and transcript so far.
+    type Dictation;
+    /// A new dictation, or `None` when its detector cannot be created.
+    fn open(&self) -> Option<Self::Dictation>;
+    /// Add samples in [-1, 1); returns the whole transcript when it changed.
+    fn push(&self, dictation: &mut Self::Dictation, samples: &[f32]) -> Option<String>;
+    /// Transcribe the passage still in progress and return the whole transcript.
+    fn finish(&self, dictation: Self::Dictation) -> String;
+}
+
+/// 16-bit little-endian PCM as samples in [-1, 1); a trailing odd byte is ignored.
+pub fn samples(pcm: &[u8]) -> Vec<f32> {
+    pcm.chunks_exact(2)
+        .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0)
+        .collect()
+}
+
+/// Answer requests until the input closes. Requests for unknown dictations are ignored, except
+/// `finish`, which answers with an error so the caller does not wait.
+pub fn serve<T: Transcriber>(
+    transcriber: &T,
+    input: impl BufRead,
+    mut out: impl Write,
+) -> io::Result<()> {
+    writeln!(out, "{}", json!({"ready": true}))?;
+    out.flush()?;
+    let mut open = HashMap::new();
+    for line in input.lines() {
+        let Ok(request) = serde_json::from_str::<Value>(&line?) else {
+            continue;
+        };
+        let id = request["id"].as_str().unwrap_or_default().to_owned();
+        let reply = match request["op"].as_str() {
+            Some("open") => match transcriber.open() {
+                Some(dictation) => {
+                    open.insert(id, dictation);
+                    None
+                }
+                None => Some(json!({"id": id, "error": "pause detector unavailable"})),
+            },
+            Some("audio") => open.get_mut(&id).and_then(|dictation| {
+                let pcm = request["pcm"]
+                    .as_str()
+                    .and_then(|pcm| STANDARD.decode(pcm).ok())
+                    .unwrap_or_default();
+                transcriber
+                    .push(dictation, &samples(&pcm))
+                    .map(|text| json!({"id": id, "text": text}))
+            }),
+            Some("finish") => Some(match open.remove(&id) {
+                Some(dictation) => json!({"id": id, "final": transcriber.finish(dictation)}),
+                None => json!({"id": id, "error": "unknown dictation"}),
+            }),
+            Some("cancel") => {
+                open.remove(&id);
+                None
+            }
+            _ => None,
+        };
+        if let Some(reply) = reply {
+            writeln!(out, "{reply}")?;
+            out.flush()?;
+        }
+    }
+    Ok(())
+}
+
+/// Load the model from `root` (`lib/` and `models/`) and serve stdin until it closes.
+pub fn run(root: &Path, settings: &settings::Dictation) -> Result<(), String> {
+    let parakeet = Parakeet::load(root, settings)?;
+    serve(&parakeet, io::stdin().lock(), io::stdout().lock()).map_err(|error| error.to_string())
+}
+
+/// C layouts from sherpa-onnx 2.0.1's `c-api.h`, as published in `sherpa-onnx-sys` 2.0.1
+/// (Apache-2.0). Configs start zeroed (every field is a pointer, integer or float, for which zero
+/// means "unset"); [`Parakeet::load`] refuses any other library version.
+#[allow(dead_code)]
+mod ffi {
+    use std::ffi::{c_char, c_float};
+
+    #[repr(C)]
+    pub struct FeatureConfig {
+        pub sample_rate: i32,
+        pub feature_dim: i32,
+    }
+    #[repr(C)]
+    pub struct HomophoneReplacerConfig {
+        pub dict_dir: *const c_char,
+        pub lexicon: *const c_char,
+        pub rule_fsts: *const c_char,
+    }
+    #[repr(C)]
+    pub struct Transducer {
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+        pub joiner: *const c_char,
+    }
+    #[repr(C)]
+    pub struct OneModel {
+        pub model: *const c_char,
+    }
+    #[repr(C)]
+    pub struct Whisper {
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+        pub language: *const c_char,
+        pub task: *const c_char,
+        pub tail_paddings: i32,
+        pub enable_token_timestamps: i32,
+        pub enable_segment_timestamps: i32,
+    }
+    #[repr(C)]
+    pub struct Canary {
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+        pub src_lang: *const c_char,
+        pub tgt_lang: *const c_char,
+        pub use_pnc: i32,
+    }
+    #[repr(C)]
+    pub struct EncoderDecoder {
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+    }
+    #[repr(C)]
+    pub struct Moonshine {
+        pub preprocessor: *const c_char,
+        pub encoder: *const c_char,
+        pub uncached_decoder: *const c_char,
+        pub cached_decoder: *const c_char,
+        pub merged_decoder: *const c_char,
+    }
+    #[repr(C)]
+    pub struct LanguageModel {
+        pub model: *const c_char,
+        pub scale: c_float,
+    }
+    #[repr(C)]
+    pub struct SenseVoice {
+        pub model: *const c_char,
+        pub language: *const c_char,
+        pub use_itn: i32,
+    }
+    #[repr(C)]
+    pub struct FunAsrNano {
+        pub encoder_adaptor: *const c_char,
+        pub llm: *const c_char,
+        pub embedding: *const c_char,
+        pub tokenizer: *const c_char,
+        pub system_prompt: *const c_char,
+        pub user_prompt: *const c_char,
+        pub max_new_tokens: i32,
+        pub temperature: c_float,
+        pub top_p: c_float,
+        pub seed: i32,
+        pub language: *const c_char,
+        pub itn: i32,
+        pub hotwords: *const c_char,
+    }
+    #[repr(C)]
+    pub struct Qwen3Asr {
+        pub conv_frontend: *const c_char,
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+        pub tokenizer: *const c_char,
+        pub max_total_len: i32,
+        pub max_new_tokens: i32,
+        pub temperature: c_float,
+        pub top_p: c_float,
+        pub seed: i32,
+        pub hotwords: *const c_char,
+    }
+    #[repr(C)]
+    pub struct CohereTranscribe {
+        pub encoder: *const c_char,
+        pub decoder: *const c_char,
+        pub language: *const c_char,
+        pub use_punct: i32,
+        pub use_itn: i32,
+    }
+    /// `SherpaOnnxOfflineModelConfig`, field for field.
+    #[repr(C)]
+    pub struct OfflineModelConfig {
+        pub transducer: Transducer,
+        pub paraformer: OneModel,
+        pub nemo_ctc: OneModel,
+        pub whisper: Whisper,
+        pub tdnn: OneModel,
+        pub tokens: *const c_char,
+        pub num_threads: i32,
+        pub debug: i32,
+        pub provider: *const c_char,
+        pub model_type: *const c_char,
+        pub modeling_unit: *const c_char,
+        pub bpe_vocab: *const c_char,
+        pub telespeech_ctc: *const c_char,
+        pub sense_voice: SenseVoice,
+        pub moonshine: Moonshine,
+        pub fire_red_asr: EncoderDecoder,
+        pub dolphin: OneModel,
+        pub zipformer_ctc: OneModel,
+        pub canary: Canary,
+        pub wenet_ctc: OneModel,
+        pub omnilingual: OneModel,
+        pub medasr: OneModel,
+        pub funasr_nano: FunAsrNano,
+        pub fire_red_asr_ctc: OneModel,
+        pub qwen3_asr: Qwen3Asr,
+        pub cohere_transcribe: CohereTranscribe,
+    }
+    #[repr(C)]
+    pub struct CtcFstDecoderConfig {
+        pub graph: *const c_char,
+        pub max_active: i32,
+    }
+    /// `SherpaOnnxOfflineRecognizerConfig`, field for field.
+    #[repr(C)]
+    pub struct OfflineRecognizerConfig {
+        pub feat_config: FeatureConfig,
+        pub model_config: OfflineModelConfig,
+        pub lm_config: LanguageModel,
+        pub decoding_method: *const c_char,
+        pub max_active_paths: i32,
+        pub hotwords_file: *const c_char,
+        pub hotwords_score: c_float,
+        pub rule_fsts: *const c_char,
+        pub rule_fars: *const c_char,
+        pub blank_penalty: c_float,
+        pub hr: HomophoneReplacerConfig,
+        pub ctc_fst_decoder_config: CtcFstDecoderConfig,
+    }
+    #[repr(C)]
+    pub struct VadModel {
+        pub model: *const c_char,
+        pub threshold: c_float,
+        pub min_silence_duration: c_float,
+        pub min_speech_duration: c_float,
+        pub window_size: i32,
+        pub max_speech_duration: c_float,
+    }
+    /// `SherpaOnnxVadModelConfig`, field for field.
+    #[repr(C)]
+    pub struct VadModelConfig {
+        pub silero_vad: VadModel,
+        pub sample_rate: i32,
+        pub num_threads: i32,
+        pub provider: *const c_char,
+        pub debug: i32,
+        pub ten_vad: VadModel,
+    }
+    #[repr(C)]
+    pub struct SpeechSegment {
+        pub start: i64,
+        pub samples: *mut f32,
+        pub n: i32,
+    }
+}
+
+/// An all-zero config, which sherpa-onnx reads as "every option unset".
+pub(crate) fn zeroed<T>() -> T {
+    // SAFETY: only used for the `ffi` config structs, whose fields are raw pointers, integers and
+    // floats; the all-zero bit pattern is a valid null/0 value for each of them.
+    unsafe { std::mem::zeroed() }
+}
+
+pub(crate) type Handle = *const c_void;
+
+/// The sherpa-onnx entry points used here, resolved once from the loaded library.
+struct Api {
+    accept_waveform: unsafe extern "C" fn(Handle, i32, *const f32, i32),
+    create_stream: unsafe extern "C" fn(Handle) -> Handle,
+    decode: unsafe extern "C" fn(Handle, Handle),
+    destroy_stream: unsafe extern "C" fn(Handle),
+    result_json: unsafe extern "C" fn(Handle) -> *const c_char,
+    destroy_result_json: unsafe extern "C" fn(*const c_char),
+    create_vad: unsafe extern "C" fn(*const ffi::VadModelConfig, c_float) -> Handle,
+    destroy_vad: unsafe extern "C" fn(Handle),
+    vad_accept: unsafe extern "C" fn(Handle, *const f32, i32),
+    vad_empty: unsafe extern "C" fn(Handle) -> i32,
+    vad_front: unsafe extern "C" fn(Handle) -> *const ffi::SpeechSegment,
+    vad_pop: unsafe extern "C" fn(Handle),
+    vad_flush: unsafe extern "C" fn(Handle),
+    vad_detected: unsafe extern "C" fn(Handle) -> i32,
+    destroy_segment: unsafe extern "C" fn(*const ffi::SpeechSegment),
+}
+
+/// Parakeet TDT with a Silero pause detector per dictation. The library stays loaded for the
+/// process lifetime, so the resolved entry points and the recognizer remain valid.
+pub struct Parakeet {
+    _library: Library,
+    api: Api,
+    recognizer: Handle,
+    vad: ffi::VadModelConfig,
+    /// Owns the strings `vad` points to.
+    _vad_strings: Vec<CString>,
+    /// Samples of audio before each detected phrase that are transcribed with its draft.
+    lead_in: usize,
+    /// Samples of speech after which a passage ends at the next pause.
+    passage: usize,
+    /// Samples of silence that close a phrase.
+    pause: usize,
+}
+
+/// One open dictation: its pause detector, finished passages and the passage in progress.
+pub struct ParakeetDictation {
+    vad: Handle,
+    destroy: unsafe extern "C" fn(Handle),
+    /// Transcripts of the finished passages.
+    passages: Vec<String>,
+    /// Draft transcripts of the phrases in the passage in progress.
+    phrases: Vec<String>,
+    /// Every sample of the passage in progress, so it can be transcribed in one piece.
+    audio: Vec<f32>,
+    /// Position of `audio[0]` among all of the dictation's samples.
+    start: usize,
+    /// Where the last closed phrase ends; the next draft's lead-in stops there.
+    spoken: usize,
+}
+
+impl ParakeetDictation {
+    /// The finished passages, then the drafts of the passage in progress.
+    fn transcript(&self) -> String {
+        let parts: Vec<&str> = self
+            .passages
+            .iter()
+            .chain(&self.phrases)
+            .map(String::as_str)
+            .collect();
+        parts.join(" ")
+    }
+}
+
+/// Where a phrase lies in `audio` (which begins at sample `start` and holds `available` samples):
+/// the detector found it at `phrase_start` with `len` samples. The span reaches back `lead_in`
+/// samples, because the detector marks speech only once it is sure (a soft first word comes
+/// earlier), but never before `floor`, the end of the phrase before it.
+fn phrase_span(
+    phrase_start: usize,
+    len: usize,
+    lead_in: usize,
+    floor: usize,
+    start: usize,
+    available: usize,
+) -> Range<usize> {
+    let end = (phrase_start + len).saturating_sub(start).min(available);
+    let from = phrase_start.saturating_sub(lead_in).max(floor).max(start) - start;
+    from.min(end)..end
+}
+
+/// Where the passage beginning at sample `start` ends, now that a phrase closed at `spoken`, or
+/// `None` while it is still short. A passage of `passage` samples ends halfway into the pause
+/// (`pause` samples) after that phrase, so a soft sound on either side stays with its words; if
+/// speech carried on with no pause (the detector cut a long phrase, so `speaking` is still set),
+/// it waits for the next one. At twice that length it ends at the phrase regardless, which bounds
+/// the work left for finish.
+fn passage_cut(
+    start: usize,
+    spoken: usize,
+    passage: usize,
+    pause: usize,
+    speaking: bool,
+) -> Option<usize> {
+    let len = spoken.saturating_sub(start);
+    if len >= passage.saturating_mul(2) {
+        return Some(spoken);
+    }
+    (len >= passage && !speaking).then_some(spoken + pause / 2)
+}
+
+impl Drop for ParakeetDictation {
+    fn drop(&mut self) {
+        // SAFETY: `vad` came from `create_vad` and is destroyed exactly once, here.
+        unsafe { (self.destroy)(self.vad) }
+    }
+}
+
+pub(crate) fn text(value: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| "model path contains a NUL byte".to_owned())
+}
+
+/// Load a shared library from `root/lib`.
+pub(crate) fn library(root: &Path, name: &str) -> Result<Library, String> {
+    let path = root.join("lib").join(name);
+    // SAFETY: loads a checksum-pinned library from the image (sherpa-onnx, whose initializers
+    // only set up ONNX Runtime, or espeak-ng, which has none); nothing else is loaded from there.
+    unsafe { Library::new(&path) }
+        .map_err(|error| format!("cannot load {}: {error}", path.display()))
+}
+
+/// Resolve one entry point; the caller declares `T` with its C signature.
+///
+/// # Safety
+/// `T` must be the symbol's exact function pointer type.
+pub(crate) unsafe fn symbol<T: Copy>(library: &Library, name: &str) -> Result<T, String> {
+    // SAFETY: the caller guarantees the signature; the copied pointer is used only while
+    // `library` stays loaded, which its owners keep for the process lifetime.
+    unsafe { library.get::<T>(name.as_bytes()) }
+        .map(|symbol| *symbol)
+        .map_err(|error| format!("{name}: {error}"))
+}
+
+/// sherpa-onnx from `root/lib`, refused unless it is the release [`ffi`] mirrors.
+pub(crate) fn sherpa(root: &Path) -> Result<Library, String> {
+    let library = library(root, "libsherpa-onnx-c-api.so")?;
+    // SAFETY: the version query has this signature in every sherpa-onnx release and returns a
+    // static string.
+    let found = unsafe {
+        let version: unsafe extern "C" fn() -> *const c_char =
+            symbol(&library, "SherpaOnnxGetVersionStr")?;
+        CStr::from_ptr(version()).to_string_lossy().into_owned()
+    };
+    if found != LIBRARY_VERSION {
+        return Err(format!(
+            "sherpa-onnx {found} found; the C layouts match {LIBRARY_VERSION}"
+        ));
+    }
+    Ok(library)
+}
+
+impl Parakeet {
+    /// Load sherpa-onnx from `root/lib` and the models from `root/models`.
+    pub fn load(root: &Path, settings: &settings::Dictation) -> Result<Self, String> {
+        let library = sherpa(root)?;
+        // SAFETY: each symbol is declared with the signature of sherpa-onnx 2.0.1's C API.
+        let api = unsafe {
+            macro_rules! symbol {
+                ($name:literal) => {
+                    symbol(&library, $name)?
+                };
+            }
+            Api {
+                accept_waveform: symbol!("SherpaOnnxAcceptWaveformOffline"),
+                create_stream: symbol!("SherpaOnnxCreateOfflineStream"),
+                decode: symbol!("SherpaOnnxDecodeOfflineStream"),
+                destroy_stream: symbol!("SherpaOnnxDestroyOfflineStream"),
+                result_json: symbol!("SherpaOnnxGetOfflineStreamResultAsJson"),
+                destroy_result_json: symbol!("SherpaOnnxDestroyOfflineStreamResultJson"),
+                create_vad: symbol!("SherpaOnnxCreateVoiceActivityDetector"),
+                destroy_vad: symbol!("SherpaOnnxDestroyVoiceActivityDetector"),
+                vad_accept: symbol!("SherpaOnnxVoiceActivityDetectorAcceptWaveform"),
+                vad_empty: symbol!("SherpaOnnxVoiceActivityDetectorEmpty"),
+                vad_front: symbol!("SherpaOnnxVoiceActivityDetectorFront"),
+                vad_pop: symbol!("SherpaOnnxVoiceActivityDetectorPop"),
+                vad_flush: symbol!("SherpaOnnxVoiceActivityDetectorFlush"),
+                vad_detected: symbol!("SherpaOnnxVoiceActivityDetectorDetected"),
+                destroy_segment: symbol!("SherpaOnnxDestroySpeechSegment"),
+            }
+        };
+        let models = root.join("models");
+        let model = |name: &str| text(&models.join(name).to_string_lossy());
+        let (encoder, decoder, joiner, tokens) = (
+            model("parakeet/encoder.int8.onnx")?,
+            model("parakeet/decoder.int8.onnx")?,
+            model("parakeet/joiner.int8.onnx")?,
+            model("parakeet/tokens.txt")?,
+        );
+        let (model_type, method) = (text("nemo_transducer")?, text("greedy_search")?);
+        let mut config: ffi::OfflineRecognizerConfig = zeroed();
+        config.feat_config = ffi::FeatureConfig {
+            sample_rate: SAMPLE_RATE,
+            feature_dim: 80,
+        };
+        config.model_config.transducer = ffi::Transducer {
+            encoder: encoder.as_ptr(),
+            decoder: decoder.as_ptr(),
+            joiner: joiner.as_ptr(),
+        };
+        config.model_config.tokens = tokens.as_ptr();
+        config.model_config.num_threads = settings.threads;
+        config.model_config.model_type = model_type.as_ptr();
+        config.decoding_method = method.as_ptr();
+        config.max_active_paths = 4;
+        // SAFETY: the symbol has this signature in 2.0.1; `config` and the strings it points to
+        // outlive the call, which copies what it needs.
+        let recognizer = unsafe {
+            let create: unsafe extern "C" fn(*const ffi::OfflineRecognizerConfig) -> Handle =
+                symbol(&library, "SherpaOnnxCreateOfflineRecognizer")?;
+            create(&config)
+        };
+        if recognizer.is_null() {
+            return Err("Parakeet model failed to load".into());
+        }
+        let silero = model("silero_vad.onnx")?;
+        let pauses = &settings.pause_detection;
+        let mut vad: ffi::VadModelConfig = zeroed();
+        vad.silero_vad = ffi::VadModel {
+            model: silero.as_ptr(),
+            threshold: pauses.threshold,
+            min_silence_duration: pauses.min_silence_seconds,
+            min_speech_duration: pauses.min_speech_seconds,
+            window_size: VAD_WINDOW as i32,
+            max_speech_duration: pauses.max_phrase_seconds,
+        };
+        vad.sample_rate = SAMPLE_RATE;
+        vad.num_threads = 1;
+        let parakeet = Parakeet {
+            _library: library,
+            api,
+            recognizer,
+            vad,
+            _vad_strings: vec![silero],
+            lead_in: (pauses.lead_in_seconds * SAMPLE_RATE as f32) as usize,
+            passage: (pauses.passage_seconds * SAMPLE_RATE as f32) as usize,
+            pause: (pauses.min_silence_seconds * SAMPLE_RATE as f32) as usize,
+        };
+        parakeet.open().ok_or("Silero VAD model failed to load")?;
+        Ok(parakeet)
+    }
+
+    /// Transcribe one closed phrase.
+    fn transcribe(&self, samples: &[f32]) -> String {
+        let api = &self.api;
+        // SAFETY: the recognizer and stream are live handles of this library; the stream is
+        // destroyed after its result JSON is copied and freed, and `samples` outlives the call.
+        unsafe {
+            let stream = (api.create_stream)(self.recognizer);
+            if stream.is_null() {
+                return String::new();
+            }
+            (api.accept_waveform)(stream, SAMPLE_RATE, samples.as_ptr(), samples.len() as i32);
+            (api.decode)(self.recognizer, stream);
+            let json = (api.result_json)(stream);
+            let result = if json.is_null() {
+                String::new()
+            } else {
+                let value = serde_json::from_slice::<Value>(CStr::from_ptr(json).to_bytes())
+                    .ok()
+                    .and_then(|value| value["text"].as_str().map(|text| text.trim().to_owned()))
+                    .unwrap_or_default();
+                (api.destroy_result_json)(json);
+                value
+            };
+            (api.destroy_stream)(stream);
+            result
+        }
+    }
+
+    /// Take the phrases the detector has closed, as (first sample, samples).
+    fn closed(&self, dictation: &mut ParakeetDictation) -> Vec<(usize, Vec<f32>)> {
+        let api = &self.api;
+        let mut phrases = Vec::new();
+        // SAFETY: `dictation.vad` is a live detector; each front segment is copied out and
+        // destroyed before the detector pops it.
+        while unsafe { (api.vad_empty)(dictation.vad) } == 0 {
+            // SAFETY: as above; the segment's sample pointer covers `n` floats until it is destroyed.
+            phrases.push(unsafe {
+                let segment = (api.vad_front)(dictation.vad);
+                let found = if segment.is_null() || (*segment).samples.is_null() {
+                    (0, Vec::new())
+                } else {
+                    let samples = (*segment).samples;
+                    let n = (*segment).n.max(0) as usize;
+                    let start = (*segment).start.max(0) as usize;
+                    (start, std::slice::from_raw_parts(samples, n).to_vec())
+                };
+                if !segment.is_null() {
+                    (api.destroy_segment)(segment);
+                }
+                (api.vad_pop)(dictation.vad);
+                found
+            });
+        }
+        phrases
+    }
+
+    /// Transcribe each closed phrase as a draft, then end the passage if it is long enough;
+    /// true when the transcript changed.
+    fn drain(&self, dictation: &mut ParakeetDictation) -> bool {
+        let closed = self.closed(dictation);
+        if closed.is_empty() {
+            return false;
+        }
+        for (phrase_start, detected) in closed {
+            let span = phrase_span(
+                phrase_start,
+                detected.len(),
+                self.lead_in,
+                dictation.spoken,
+                dictation.start,
+                dictation.audio.len(),
+            );
+            dictation.spoken = phrase_start + detected.len();
+            // The detector's own copy is used only if the passage audio no longer covers it.
+            let samples = if span.end - span.start >= detected.len() {
+                &dictation.audio[span]
+            } else {
+                &detected[..]
+            };
+            let phrase = self.transcribe(samples);
+            if !phrase.is_empty() {
+                dictation.phrases.push(phrase);
+            }
+        }
+        // SAFETY: a live detector.
+        let speaking = unsafe { (self.api.vad_detected)(dictation.vad) } != 0;
+        if let Some(cut) = passage_cut(
+            dictation.start,
+            dictation.spoken,
+            self.passage,
+            self.pause,
+            speaking,
+        ) {
+            let end = cut
+                .saturating_sub(dictation.start)
+                .min(dictation.audio.len());
+            self.end_passage(dictation, end);
+        }
+        true
+    }
+
+    /// Transcribe the first `end` samples of the passage in progress in one piece, replacing
+    /// their drafts, and start the next passage after them.
+    fn end_passage(&self, dictation: &mut ParakeetDictation, end: usize) {
+        let passage = self.transcribe(&dictation.audio[..end]);
+        if !passage.is_empty() {
+            dictation.passages.push(passage);
+        }
+        dictation.phrases.clear();
+        dictation.audio.drain(..end);
+        dictation.start += end;
+    }
+}
+
+impl Transcriber for Parakeet {
+    type Dictation = ParakeetDictation;
+
+    fn open(&self) -> Option<ParakeetDictation> {
+        // SAFETY: `self.vad` and the model path it points to live as long as `self`.
+        let vad = unsafe { (self.api.create_vad)(&self.vad, VAD_BUFFER_SECONDS) };
+        (!vad.is_null()).then(|| ParakeetDictation {
+            vad,
+            destroy: self.api.destroy_vad,
+            passages: Vec::new(),
+            phrases: Vec::new(),
+            audio: Vec::new(),
+            start: 0,
+            spoken: 0,
+        })
+    }
+
+    fn push(&self, dictation: &mut ParakeetDictation, samples: &[f32]) -> Option<String> {
+        // The passage keeps all its audio; the host's recording limit bounds it.
+        dictation.audio.extend_from_slice(samples);
+        for window in samples.chunks(VAD_WINDOW) {
+            // SAFETY: a live detector; `window` outlives the call, which copies it.
+            unsafe { (self.api.vad_accept)(dictation.vad, window.as_ptr(), window.len() as i32) };
+        }
+        self.drain(dictation).then(|| dictation.transcript())
+    }
+
+    fn finish(&self, mut dictation: ParakeetDictation) -> String {
+        // SAFETY: a live detector; flushing closes the phrase in progress.
+        unsafe { (self.api.vad_flush)(dictation.vad) };
+        // The last passage replaces its drafts, so its closed phrases only mark where speech was.
+        for (phrase_start, detected) in self.closed(&mut dictation) {
+            dictation.spoken = phrase_start + detected.len();
+        }
+        // A passage with no speech is not transcribed, so noise cannot add words.
+        if dictation.spoken > dictation.start {
+            let end = dictation.audio.len();
+            self.end_passage(&mut dictation, end);
+        }
+        dictation.transcript()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Test code may unwrap (the standard's `allow-unwrap-in-tests`).
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// Treats every 1600 samples as one phrase named by its count.
+    struct Counting;
+    impl Transcriber for Counting {
+        type Dictation = (usize, Vec<String>);
+        fn open(&self) -> Option<Self::Dictation> {
+            Some((0, Vec::new()))
+        }
+        fn push(&self, d: &mut Self::Dictation, samples: &[f32]) -> Option<String> {
+            d.0 += samples.len();
+            let before = d.1.len();
+            while d.0 >= 1600 {
+                d.0 -= 1600;
+                d.1.push(format!("Phrase {}.", d.1.len() + 1));
+            }
+            (d.1.len() > before).then(|| d.1.join(" "))
+        }
+        fn finish(&self, d: Self::Dictation) -> String {
+            d.1.join(" ")
+        }
+    }
+
+    fn replies(input: &str) -> Vec<Value> {
+        let mut out = Vec::new();
+        serve(&Counting, input.as_bytes(), &mut out).unwrap();
+        String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// A first word spoken softly (the first 0.8 s at 5% volume, as when a phone's gain is still
+    /// settling) is lost without a lead-in and kept with the default 0.5 s; runs only with the
+    /// real model.
+    #[test]
+    fn a_soft_first_word_is_kept_when_installed() {
+        let Ok(root) = std::env::var("WEBAGENT_INFERENCE_ROOT") else {
+            return;
+        };
+        let wav = std::fs::read(Path::new(&root).join("models/parakeet/test_wavs/en.wav")).unwrap();
+        let mut audio = samples(&wav[44..]);
+        audio[..12800].iter_mut().for_each(|sample| *sample *= 0.05);
+        let settings = crate::settings::VoiceSettings::default().dictation;
+        let parakeet = Parakeet::load(Path::new(&root), &settings).unwrap();
+        let mut dictation = parakeet.open().unwrap();
+        for batch in audio.chunks(1600) {
+            parakeet.push(&mut dictation, batch);
+        }
+        let text = parakeet.finish(dictation);
+        assert!(text.starts_with("Ask not what"), "{text}");
+    }
+
+    #[test]
+    fn phrases_reach_back_for_their_lead_in_but_not_into_the_last_phrase() {
+        // Passage audio starts at sample 1000 and holds 5000 samples.
+        assert_eq!(phrase_span(3000, 1000, 800, 0, 1000, 5000), 1200..3000);
+        // The lead-in stops at the first passage sample.
+        assert_eq!(phrase_span(1200, 1000, 800, 0, 1000, 5000), 0..1200);
+        // ... and at the end of the phrase before.
+        assert_eq!(phrase_span(3000, 1000, 800, 2500, 1000, 5000), 1500..3000);
+        // A phrase reported past the kept audio is clamped.
+        assert_eq!(phrase_span(5500, 1000, 0, 0, 1000, 5000), 4500..5000);
+        // A phrase entirely before the kept audio is empty.
+        assert_eq!(phrase_span(0, 500, 0, 0, 1000, 5000), 0..0);
+    }
+
+    #[test]
+    fn passages_end_in_the_first_pause_after_their_length() {
+        // A passage from sample 100 with 1000 samples of speech, ending in a 200-sample pause.
+        assert_eq!(passage_cut(100, 1100, 1000, 200, false), Some(1200));
+        // Shorter, or speech carried on without a pause: it goes on.
+        assert_eq!(passage_cut(100, 1000, 1000, 200, false), None);
+        assert_eq!(passage_cut(100, 1100, 1000, 200, true), None);
+        // Twice as long: it ends at the phrase even mid-speech.
+        assert_eq!(passage_cut(100, 2100, 1000, 200, true), Some(2100));
+    }
+
+    #[test]
+    fn pcm_becomes_unit_range_samples() {
+        let pcm: Vec<u8> = [0i16, 16384, -32768, i16::MAX]
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .chain([7])
+            .collect();
+        assert_eq!(samples(&pcm), vec![0.0, 0.5, -1.0, 32767.0 / 32768.0]);
+    }
+
+    #[test]
+    fn dictations_are_transcribed_apart_and_unknown_ones_answer_finish() {
+        let frame = STANDARD.encode(vec![0u8; 3200]);
+        let audio = |id: &str| format!("{}\n", json!({"op": "audio", "id": id, "pcm": frame}));
+        let input = [
+            json!({"op": "open", "id": "a"}).to_string() + "\n",
+            json!({"op": "open", "id": "b"}).to_string() + "\n",
+            audio("a"),
+            audio("b"),
+            audio("a"),
+            "not json\n".into(),
+            audio("closed"),
+            json!({"op": "cancel", "id": "b"}).to_string() + "\n",
+            audio("b"),
+            json!({"op": "finish", "id": "a"}).to_string() + "\n",
+            json!({"op": "finish", "id": "b"}).to_string() + "\n",
+        ]
+        .concat();
+        assert_eq!(
+            replies(&input),
+            vec![
+                json!({"ready": true}),
+                json!({"id": "a", "text": "Phrase 1."}),
+                json!({"id": "b", "text": "Phrase 1."}),
+                json!({"id": "a", "text": "Phrase 1. Phrase 2."}),
+                json!({"id": "a", "final": "Phrase 1. Phrase 2."}),
+                json!({"id": "b", "error": "unknown dictation"}),
+            ]
+        );
+    }
+
+    /// Loads the real library and models when `WEBAGENT_INFERENCE_ROOT` names a copy of /opt/inference
+    /// with the model's sample recordings; the broker's test run has none, so it is skipped there.
+    /// Audio goes in one-second batches, as a browser backlog sends it, and the opening words
+    /// must survive.
+    #[test]
+    fn parakeet_transcribes_recordings_when_installed() {
+        let Ok(root) = std::env::var("WEBAGENT_INFERENCE_ROOT") else {
+            return;
+        };
+        let defaults = crate::settings::VoiceSettings::default();
+        let parakeet = Parakeet::load(Path::new(&root), &defaults.dictation).unwrap();
+        for (language, word) in [
+            ("en", "Ask not"),
+            ("de", "Alles hat"),
+            ("fr", "Ne vous"),
+            ("es", "No preguntes"),
+        ] {
+            let wav = Path::new(&root).join(format!("models/parakeet/test_wavs/{language}.wav"));
+            let wav = std::fs::read(wav).unwrap();
+            let mut dictation = parakeet.open().unwrap();
+            for batch in samples(&wav[44..]).chunks(16000) {
+                parakeet.push(&mut dictation, batch);
+            }
+            let text = parakeet.finish(dictation);
+            assert!(text.starts_with(word), "{language}: {text}");
+        }
+    }
+}

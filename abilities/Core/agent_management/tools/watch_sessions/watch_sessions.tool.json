@@ -1,0 +1,43 @@
+{
+  "name": "watch_sessions",
+  "description": "Watch an accessible session for a settled turn through the Automation service.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expires_ms": {
+        "type": "integer"
+      },
+      "prompt": {
+        "maxLength": 16000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "session_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id",
+      "prompt",
+      "expires_ms"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "tell me when the other session finishes",
+      "watch a session for its reply"
+    ],
+    "keywords": [
+      "watch",
+      "notify when done"
+    ]
+  }
+}

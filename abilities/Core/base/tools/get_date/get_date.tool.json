@@ -1,0 +1,32 @@
+{
+  "name": "get_date",
+  "description": "Current Gregorian date in UTC or a fixed UTC offset",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "format": {
+        "enum": [
+          "full",
+          "short",
+          "iso"
+        ],
+        "type": "string"
+      },
+      "timezone": {
+        "maxLength": 9,
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

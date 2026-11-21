@@ -1,0 +1,18 @@
+/* ============================================================
+   Bullet grid — colour + layout tokens (read by bullet-grid.js)
+   ------------------------------------------------------------
+   Fixed neutral colours, defined here so the background stays
+   self-contained. bullet-grid.js carries matching fallbacks.
+
+   The grid only draws on the black boot curtain, so it uses the same
+   white palette in every theme: the app's theme and accent can apply
+   mid-boot without recolouring the scene.
+   ============================================================ */
+
+/* White dots and white highlight near the cursor, fixed in every theme so the
+   app's theme or accent loading mid-boot cannot recolour the scene. */
+body {
+  --bgrid-dot-rgb:    255, 255, 255;             /* resting dot colour (drawn at 20% opacity) */
+  --bgrid-active-rgb: 255, 255, 255;             /* dot colour at the cursor */
+  --bgrid-spacing:    34;                        /* grid cell size (px) */
+}

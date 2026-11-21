@@ -1,0 +1,16 @@
+{
+  "display_name": "App Control",
+  "kind": "ability",
+  "description": "Request a registered app destination in the current caller’s active browser. Navigation preserves unsent chat drafts and existing page permissions.",
+  "icon": "app-window",
+  "color": "#73daca",
+  "order": 3,
+  "placeholder": false,
+  "readiness": "ready",
+  "config": {},
+  "migration_note": "Native V3 implementation. Current schemas, live policy and configured model/module availability determine callable behavior.",
+  "owner_tier": [
+    "free",
+    "administrator"
+  ]
+}

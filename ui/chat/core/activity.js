@@ -1,0 +1,235 @@
+// Locates private tool and run activity projection and polling Config: config/ui/chat/chat.json -> chat_common.show_activity_groups.
+// Private journal projection: no public reducer or persistent browser cache.
+/**
+ * Merges one session's activity page by sequence while rejecting identity, cursor, and revision conflicts.
+ * Keeps records ordered by sequence and carries the server's segment snapshot forward.
+ * Called by watchActivity.poll for each fetched continuation page.
+ */
+export function mergeActivity(previous, page, sessionId) {
+  // Run-log pages carry no segments; session pages do.
+  const segments = page.segments ?? previous.segments;
+  if (!Array.isArray(page.events) || !Array.isArray(segments)
+      || !Number.isSafeInteger(page.cursor) || page.cursor < previous.cursor)
+    throw new Error('Invalid activity page');
+  const events = new Map(previous.events.map(row => [row.seq, row]));
+  for (const row of page.events) {
+    if (row.session_id !== sessionId || !Number.isSafeInteger(row.seq)
+        || row.seq <= 0 || typeof row.run_id !== 'string')
+      throw new Error('Activity identity mismatch');
+    const old = events.get(row.seq);
+    if (old && JSON.stringify(old) !== JSON.stringify(row))
+      throw new Error('Activity revision conflict');
+    events.set(row.seq, row);
+  }
+  if (page.events.some(row => row.seq > page.cursor)) throw new Error('Invalid activity cursor');
+  return {events: [...events.values()].sort((a,b) => a.seq-b.seq),
+    segments, cursor: page.cursor};
+}
+
+// Tool result statuses that mean the call failed.
+const FAILED_STATUSES=new Set(['error','rejected','denied','failed','cancelled','timeout','uncertain','interrupted']);
+// Parses a tool_result payload's result; non-JSON or oversized text yields null.
+function toolResult(payload) {
+  let value=payload?.result ?? payload?.output;
+  if (typeof value==='string' && value.length<=1024*1024) {
+    try {value=JSON.parse(value);} catch (_) {return null;}
+  }
+  return value && typeof value==='object' ? value : null;
+}
+/** Whether the runtime held a tool call as a possible duplicate instead of running it. */
+export function toolHeld(payload) {
+  return toolResult(payload)?.status==='held';
+}
+/** Returns a tool_result payload's failure text, or null when the tool did not report a failure. */
+export function toolFailure(payload) {
+  if (payload?.error) return typeof payload.error==='string' ? payload.error : 'error';
+  const value=toolResult(payload);
+  if (!value || !FAILED_STATUSES.has(value.status)) return null;
+  const text=typeof value.output==='string' ? value.output
+    : typeof value.error==='string' ? value.error : value.status;
+  return text.length>300 ? text.slice(0,300)+'…' : text;
+}
+
+// Formats a compaction's input size, and its summary size once known, in KB.
+function compactionSize(input,summary) {
+  if (!Number.isFinite(input)) return '';
+  const kb=value=>(value/1024).toFixed(1)+' KB';
+  return ' · '+kb(input)+(Number.isFinite(summary)?' → '+kb(summary)+' summary':' input');
+}
+
+
+/** A share as a percentage rounded down to one decimal, so 99.5% never reads as 100%. */
+const share=(part,whole)=>(Math.floor(1000*part/Math.max(1,whole))/10)+'%';
+/** Label for one model call's cache figures: input tokens and the share read from cache. */
+export function modelCallLabel(p) {
+  const count=n=>n>=1000?(n/1000).toFixed(1)+'k':String(n);
+  if (!Number.isFinite(p.input_tokens)) return 'Model call · usage not reported';
+  const cached=Number.isFinite(p.cached_input_tokens)
+    ? ' · '+share(p.cached_input_tokens,p.input_tokens)+' cached' : '';
+  return 'Model call · '+count(p.input_tokens)+' in'+cached;
+}
+/** Details for a model call row: provider figures, the prefix estimate and where the request first changed. */
+export function modelCallText(p) {
+  const change={no_previous_call:'no previous call to compare',tools:'tool definitions',instructions:'instructions',
+    appended:'none, only new history added'}[p.first_change]
+    || (p.first_change==='history'?'history entry '+p.first_change_entry:'');
+  const estimate=Number.isFinite(p.sent_bytes)&&p.sent_bytes>0
+    ? 'Estimate: '+share(p.matched_bytes||0,p.sent_bytes)+' of the request unchanged since the previous call'
+      +(change?'; first change: '+change:'') : '';
+  const provider=Number.isFinite(p.input_tokens)
+    ? 'Provider: '+p.input_tokens+' input tokens, '+(p.cached_input_tokens??'unreported')+' read from cache, '
+      +(p.cache_write_tokens??0)+' written to cache' : 'Provider: usage not reported';
+  return [provider,estimate].filter(Boolean).join('\n');
+}
+
+/** Projects journal events into grouped tool, message, mode, compaction, retry and closer rows for activityGroups. */
+export function activityRows(events) {
+  const rows=[], tools=new Map(), messages=new Map(), controls=new Set();
+  let compaction=null;
+  for (const event of events) {
+    const p=event.payload || {}, kind=event.kind;
+    // Messages the chat already shows (working bubbles, the final reply) and the publish control stay out.
+    if (kind === 'agent_step_end' && p.in_chat) continue;
+    if (kind === 'tool_call' && p.tool === 'publish_main_message') {controls.add(p.tool_call_id); continue;}
+    if (kind === 'tool_result' && controls.has(p.tool_call_id)) continue;
+    if (kind === 'tool_call' || kind === 'tool_result') {
+      const key=p.tool_call_id || event.event_id;
+      let row=tools.get(key);
+      if (!row) {
+        row={id:'tool:'+key, category:'tools', label:p.tool || 'Tool', events:[]};
+        tools.set(key,row); rows.push(row);
+      }
+      row.events.push(event);
+      row.label=(p.tool || row.label.split(' · ')[0])+' · '+
+        (kind==='tool_call' ? 'running' : toolHeld(p) ? 'held: possible duplicate'
+          : toolFailure(p)!==null ? 'failed: '+toolFailure(p) : 'done');
+    } else if (kind === 'agent_step_end' || kind === 'response') {
+      const key=p.asst_id || event.event_id;
+      let row=messages.get(key);
+      if (!row) {
+        row={id:'message:'+key,category:kind==='response'?'responses':'updates',
+          label:kind==='response'?'Response':'Update',events:[]};
+        messages.set(key,row);rows.push(row);
+      }
+      row.events.push(event);row.text=p.content || '';
+      if (kind==='response') {row.category='responses';row.label='Response';}
+    } else if (kind === 'mode_change' || kind === 'execution_mode') {
+      rows.push({id:event.event_id,category:'modes',label:'Mode change',events:[event]});
+    } else if (kind === 'retry_scheduled') {
+      // A provider failure the run will retry, fail over, or resume later; not an agent tool call.
+      const wait=p.wait_seconds>=120?Math.round(p.wait_seconds/60)+' min':(p.wait_seconds??0)+' s';
+      const label=p.auto_resume?'Retries used up · resuming automatically in '+wait
+        :p.backup?'Switching to the backup model in '+wait
+        :'Retrying connection in '+wait+' · attempt '+p.attempt+' of '+p.of;
+      rows.push({id:event.event_id,category:'retries',retry:true,autoResume:!!p.auto_resume,label,
+        text:p.error||'',events:[event]});
+    } else if (kind === 'model_usage') {
+      // One row per model call: how much of its input the provider read from cache, beside our estimate.
+      rows.push({id:event.event_id,category:'models',modelCall:true,label:modelCallLabel(p),text:modelCallText(p),events:[event]});
+    } else if (kind === 'closing_status') {
+      // The System-role closer's session status; a failed attempt reads like a failed tool call.
+      const text=p.error?'Attempt '+p.attempt+' of '+p.of+' failed: '+p.error+(p.fallback?'\n\nFallback status recorded.':'')
+        :[p.flag,p.notification].filter(Boolean).join(' · ');
+      rows.push({id:event.event_id,category:'closers',closer:true,failed:!!p.error,model:p.model||'',
+        label:'Closing status'+(p.error?'':p.flag?' · '+p.flag:''),text,events:[event]});
+    } else if (kind === 'compaction_call') {
+      // One expandable row per compaction: the call opens it and its result fills it.
+      const reason={automatic:' · automatic, context limit',requested:' · requested by agent'}[p.reason]||'';
+      compaction={id:event.event_id,category:'compactions',compaction:true,inputBytes:p.input_bytes,
+        label:'Compaction'+reason+' · System model '+(p.model||'unknown')+compactionSize(p.input_bytes),text:'',events:[event]};
+      rows.push(compaction);
+    } else if (kind === 'compaction_completed' || kind === 'compaction_result'
+        || (kind==='pipeline' && p.step==='compaction_end')) {
+      const text=p.error?'Compaction failed: '+p.error:typeof p.summary==='string'?p.summary:'';
+      if (kind==='compaction_result' && compaction) {
+        compaction.events.push(event);compaction.text=text;
+        // A summary shows how far it shrank the input it replaced.
+        if (!p.error && typeof p.summary==='string') compaction.label=compaction.label.replace(
+          compactionSize(compaction.inputBytes),compactionSize(compaction.inputBytes,new TextEncoder().encode(p.summary).length));
+        compaction=null;
+      }
+      else rows.push({id:event.event_id,category:'compactions',label:'Compaction',text,events:[event]});
+    }
+  }
+  return rows;
+}
+
+/**
+ * Assigns events to execution segments, retaining uncovered late events on the latest segment.
+ * Counts projected rows and derives display state from the matching run snapshot.
+ * Called by ui/chat/elements/index.js paint to prepare transcript groups.
+ */
+export function activityGroups(activity, runs) {
+  // Tests whether a sequence falls inside a segment's explicit run interval.
+  const owns=(segment,event)=>event.run_id===segment.run_id && segment.first_seq != null
+    && event.seq>=segment.first_seq && event.seq<=segment.last_seq;
+  const covered=new Set(activity.events.filter(e=>activity.segments.some(s=>owns(s,e))).map(e=>e.seq));
+  const lastByRun=new Map(activity.segments.map(s=>[s.run_id,s.id]));
+  const terminal=new Set(['completed','failed','cancelled']);
+  return activity.segments.map((segment,index) => {
+    // In-range events attach to their segment; uncovered same-run events fall back to the latest segment, even if it is closed.
+    const events=activity.events.filter(e=>owns(segment,e) ||
+      (!covered.has(e.seq) && e.run_id===segment.run_id && lastByRun.get(e.run_id)===segment.id));
+    const rows=activityRows(events);
+    const counts={tools:0,updates:0,responses:0,modes:0,compactions:0,retries:0,models:0};
+    for (const row of rows) if (row.category in counts) counts[row.category]++;
+    // Loaded model-call events give the same cache sums the server summary sends.
+    const cache={input:0,cached:0};
+    for (const event of events) if (event.kind==='model_usage') {
+      cache.input+=event.payload?.input_tokens||0;cache.cached+=event.payload?.cached_input_tokens||0;
+    }
+    const run=runs.find(r=>r.id===segment.run_id);
+    const finalOutcome=lastByRun.get(segment.run_id)===segment.id && terminal.has(run?.state);
+    // A stop is superseded once the conversation resumes in any later segment.
+    const resumed=run?.state==='cancelled' && index<activity.segments.length-1;
+    // Closed segments display as finished except for a latest segment with a terminal run outcome.
+    return {...segment,events,rows,counts,cache,kind:run?.kind,
+      state:resumed || (segment.closed && !finalOutcome)?'finished':run?.state || 'queued'};
+  });
+}
+
+// Serial pagination, identity fencing, and polling are independent of the public
+// chat transport. Private records live only until this session is disconnected.
+/**
+ * Polls private activity pages serially, following cursors until caught up and retrying after failures every two seconds.
+ * Stops on 401, 403, or 404; returns a stop function that aborts the request and clears private in-memory records.
+ * Called by ui/chat/elements/index.js renderActivity with a same-origin GET request to the session activity endpoint.
+ * Calls mergeActivity and reports pages through onChange; onError must not throw or retry scheduling is skipped.
+ */
+export function watchActivity({sessionId, request, onChange, onError, schedule=setTimeout, cancel=clearTimeout}) {
+  let state={events:[],segments:[],cursor:0}, timer=null, stopped=false;
+  const controller=new AbortController();
+  // Fetches every continuation page before scheduling the next poll.
+  async function poll() {
+    try {
+      let more=true;
+      while (!stopped && more) {
+        const response=await request(state.cursor,controller.signal);
+        if(stopped) return;
+        if (!response.ok) {
+          const error=new Error('Activity unavailable ('+response.status+')');
+          error.status=response.status;throw error;
+        }
+        const page=await response.json();
+        if(stopped) return;
+        const previous=state.cursor;
+        state=mergeActivity(state,page,sessionId);
+        more=page.has_more===true;
+        if(more && state.cursor===previous) throw new Error('Activity cursor did not advance');
+        onChange(state,more);
+      }
+    } catch(error) {
+      if(stopped) return;
+      onError(error);
+      if([401,403,404].includes(error.status)) {stop();return;}
+    }
+    if(!stopped) timer=schedule(poll,2000);
+  }
+  // Fences future callbacks, aborts fetch, cancels polling, and drops session data.
+  function stop() {
+    stopped=true;controller.abort();if(timer!==null) cancel(timer);
+    state={events:[],segments:[],cursor:0};
+  }
+  void poll();
+  return stop;
+}

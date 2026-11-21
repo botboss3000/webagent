@@ -1,0 +1,97 @@
+<link rel="stylesheet" href="/ui/chat/core/recovery-details.css">
+<!-- V3 baseline chat shell adapted from v2 ui/chat/chat-side-panel.html. -->
+<!-- core/panel.js mounts this partial, wires transcript and message submission, and tears down its controls. -->
+<div id="chat-header">
+  <div class="chat-header-row v3-chat-agent-row">
+    <span class="chat-header-zone chat-header-zone-left"></span>
+    <span class="chat-header-zone chat-header-zone-center"><span class="chat-header-name-row"><span id="chat-header-agent-name" class="chat-header-agent-name">WebAgent</span></span></span>
+    <span class="chat-header-zone chat-header-zone-right"></span>
+  </div>
+  <div class="chat-header-row v3-chat-session-row">
+    <span class="chat-header-zone chat-header-zone-left"></span>
+    <span class="chat-header-zone chat-header-zone-center">  <div id="session-dropdown" class="session-dropdown" data-header-control="session_dropdown">
+    <div id="session-dropdown-trigger" class="session-dropdown-trigger" role="button" tabindex="0" title="Show sessions" aria-label="Show sessions">
+      <span class="session-row-agent-icon" id="session-dropdown-icon"><i data-lucide="bot" style="width:14px;height:14px;"></i></span>
+      <span class="srow-block" id="session-dropdown-block"><span class="srow-top"><span class="session-row-title-label" id="session-dropdown-label">—</span><span class="srow-flag" hidden></span></span><span class="srow-bottom"><span class="srow-note"><span class="srow-note-text"></span></span><span class="srow-time" id="session-dropdown-status"></span></span></span>
+      <button class="session-row-kebab" id="session-dropdown-kebab" title="More…" data-id=""><i data-lucide="more-vertical" style="width:14px;height:14px;"></i></button>
+      <button class="session-row-delete" id="session-dropdown-delete" title="Archive session" aria-label="Archive session" data-id=""><i data-lucide="archive" style="width:14px;height:14px;"></i></button>
+    </div>
+    <div id="session-dropdown-menu" class="session-dropdown-menu" hidden></div>
+  </div>
+</span>
+    <span class="chat-header-zone chat-header-zone-right"><button id="new" class="session-new-header-btn" type="button" title="New session" aria-label="New session"><i data-lucide="plus"></i></button></span>
+  </div>
+  <!-- chat_header sub_agent_tabs: controls/session-dropdown/list.js renders the session's sub-agent family chip. -->
+  <div class="chat-header-row"><span class="chat-header-zone chat-header-zone-center"><section id="chat-sub-header" data-header-control="sub_agent_tabs" aria-label="Session tabs" data-empty><div id="chat-sub-scroll-wrap"></div></section></span></div>
+</div>
+<select id="sessions" hidden aria-hidden="true" tabindex="-1"></select>
+<div id="chat-messages" tabindex="0"><div id="chat-messages-inner"></div></div>
+<!-- controls/chat-config.js applies composer/footer layout; controls/footer-handle.js owns footer expansion. -->
+<form id="composer"><div id="chat-input-area">
+<div id="chat-above-pill" class="chat-above-pill"><p id="chat-privacy-notice" class="ac-hint" role="status" hidden></p><p id="chat-allowance-hint" class="ac-hint" role="status" hidden></p><div id="chat-action-panel" aria-live="polite"></div></div>
+  <div id="chat-composer-react-island"></div>
+  <div id="chat-input-row" class="chat-pill chat-pill-boot chat-pill-row-layout chat-pill-send-only">
+    <div id="chat-preview-bar" style="display:none;"></div>
+    <div class="chat-pill-layout-rows">
+      <div class="chat-pill-layout-row" data-pill-row="0">
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-left"></div>
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-center">
+          <textarea id="chat-input" class="chat-pill-input" rows="1" placeholder="Chat" autocomplete="off" autocapitalize="off" autocorrect="on" spellcheck="true"></textarea>
+        </div>
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-right"></div>
+      </div>
+      <div class="chat-pill-layout-row" data-pill-row="1">
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-left" style="align-items:flex-end;padding:4px 2px 20px 20px;">
+          <button id="chat-attach-btn" class="chat-pill-attach" title="Attach files (or paste / drop onto the chat pill)"><i data-lucide="plus" style="width:22px;height:22px;"></i></button>
+        </div>
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-center"></div>
+        <div class="chat-pill-layout-zone chat-pill-layout-zone-right" style="align-items:flex-end;padding:4px 20px 20px 0;">
+          <div class="chat-pill-buttons">
+            <button id="chat-voice-btn" class="chat-pill-voice" title="Voice conversation" aria-label="Voice conversation"><i data-lucide="mic" style="width:22px;height:22px;"></i></button>
+            <button id="chat-send" class="chat-pill-send" title="Send message" disabled><i data-lucide="send" style="width:22px;height:22px;"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="chat-pill-stats-row" class="chat-pill-stats-row">
+      <div id="chat-pill-stats" class="chat-pill-stats">
+        <button type="button" class="chat-stats-chev left" aria-label="Scroll left">&#10094;</button>
+        <div id="chat-pill-stats-strip" class="chat-pill-stats-strip">
+          <div id="chat-token-bar" class="chat-token-bar">
+            <span class="chat-token-label">in</span>
+            <span id="chat-tokens-in" class="chat-token-value">0</span>
+            <span id="chat-token-spinner" class="chat-token-spinner"></span>
+            <span id="chat-tokens-out" class="chat-token-value">0</span>
+            <span class="chat-token-label">out</span>
+          </div>
+          <div id="chat-model-ctx" class="chat-model-ctx" style="display:none;" title="Active model's context window and max output"></div>
+          <div id="chat-cost" class="chat-cost" style="display:none;" title="Estimated cost of this session so far (tokens used x active model's price)"></div>
+        </div>
+        <button type="button" class="chat-stats-chev right" aria-label="Scroll right">&#10095;</button>
+      </div>
+    </div>
+    <button id="chat-stop-btn" class="chat-pill-stop" title="Stop generation" data-header-control="stop" hidden><i data-lucide="octagon" style="width:18px;height:18px;"></i></button>
+    <button id="chat-continue-btn" class="chat-pill-continue" title="Continue" data-header-control="continue" hidden><i data-lucide="play" style="width:18px;height:18px;"></i></button>
+    <input type="file" id="chat-file-input" multiple accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json" hidden>
+    <div id="chat-footer-handle" class="chat-footer-handle" title="Drag to show/hide footer" aria-expanded="false" aria-controls="chat-footer-row">
+      <div class="chat-footer-handle-line"></div>
+    </div>
+  </div>
+  <div id="chat-footer-row" class="chat-footer-row" hidden>
+    <button id="chat-abilities-btn" class="chat-skills-btn" title="Abilities — click to turn each on/off for this chat" data-header-control="abilities">
+      <i data-lucide="blocks" style="width:16px;height:16px;"></i>
+      <span id="chat-abilities-badge" class="csp-badge">0</span>
+    </button>
+    <button id="chat-target-btn" class="chat-target-btn" type="button" title="Remote Control — choose which device runs your next message" data-header-control="target"><i data-lucide="monitor" style="width:16px;height:16px;"></i><span class="chat-target-label"></span></button>
+    <button id="chat-mode-btn" class="chat-mode-btn" type="button" title="Cycle execution mode" data-header-control="mode">Ask</button>
+    <button id="chat-model-changer" class="chat-model-changer" data-header-control="model_changer" title="Click for model list — ◀ ▶ arrows to cycle" type="button">
+      <svg class="cmc-chev cmc-chev-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      <span class="cmc-name">model</span>
+      <span class="cmc-status"></span>
+      <svg class="cmc-chev cmc-chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+    </button>
+    <div id="cmc-toast" class="cmc-toast" style="display:none;"></div>
+  </div>
+</div>
+
+</form>

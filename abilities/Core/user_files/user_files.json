@@ -1,0 +1,16 @@
+{
+  "display_name": "User Files",
+  "kind": "ability",
+  "description": "Save and read caller-private file records, with bounded byte paging and explicit attachment copies into the current conversation.",
+  "icon": "folder",
+  "color": "#9ece6a",
+  "order": 10,
+  "placeholder": false,
+  "readiness": "ready",
+  "config": {},
+  "migration_note": "Native V3 implementation. Current schemas, live policy and configured model/module availability determine callable behavior.",
+  "owner_tier": [
+    "free",
+    "administrator"
+  ]
+}

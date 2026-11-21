@@ -1,0 +1,35 @@
+{
+  "name": "get_webhook_log",
+  "description": "Read a bounded page of private webhook events after a sequence cursor.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "after": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "limit": {
+        "maximum": 20,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "webhook_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "webhook_id"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

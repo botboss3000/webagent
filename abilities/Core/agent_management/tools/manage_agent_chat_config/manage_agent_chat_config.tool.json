@@ -1,0 +1,56 @@
+{
+  "name": "manage_agent_chat_config",
+  "description": "Read, merge-patch or reset an agent's chat.json or session dropdown overlay.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "enum": [
+          "read",
+          "patch",
+          "reset"
+        ],
+        "type": "string"
+      },
+      "agent_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "document": {
+        "enum": [
+          "chat",
+          "session_dropdown"
+        ],
+        "type": "string"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "patch": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "agent_id",
+      "action",
+      "document"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "change an agent's chat settings",
+      "reset the session dropdown config"
+    ],
+    "keywords": [
+      "chat config"
+    ]
+  }
+}

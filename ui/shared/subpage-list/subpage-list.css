@@ -1,0 +1,257 @@
+/* Settings register: a category list whose rows open one page at a time. */
+/* Empty section anchors: keep live sections connected, never display them. */
+.spl-anchors {
+  display: none;
+}
+
+/* Staging for sections while they load; never visible, never in flow. */
+.spl-stage {
+  position: fixed;
+  top: 0;
+  left: -200vw;
+  width: 640px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* A category's section is only a mount point for its page. */
+.spl-section {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.spl-shell {
+  padding: 6px 0 16px;
+}
+.spl-stack {
+  display: grid;
+  grid-template-areas: "stack";
+  min-width: 0;
+}
+.spl-stack > * {
+  grid-area: stack;
+  min-width: 0;
+}
+
+/* ---- category list ---- */
+.spl-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+}
+.spl-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 11px 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.18s ease;
+}
+.spl-row:hover {
+  background: color-mix(in srgb, var(--fg-1) 4%, transparent);
+}
+.spl-row:active {
+  background: color-mix(in srgb, var(--fg-1) 7%, transparent);
+}
+.spl-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.spl-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: var(--border-width) solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--fg-1) 3%, transparent);
+  color: var(--fg-2);
+}
+.spl-icon {
+  width: 16px;
+  height: 16px;
+}
+.spl-text {
+  flex: 1;
+  min-width: 0;
+}
+.spl-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg-1);
+}
+.spl-hint {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--fg-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spl-state {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+/* ---- one category ---- */
+.spl-detail {
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease;
+}
+.spl-detail[hidden] {
+  display: none;
+}
+.spl-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.spl-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: -6px;
+  padding: 8px 10px 8px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 0.18s ease;
+}
+.spl-back:hover {
+  background: color-mix(in srgb, var(--fg-1) 4%, transparent);
+}
+.spl-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.spl-chev-back {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-3);
+  transition: transform 0.2s ease;
+}
+.spl-back:hover .spl-chev-back {
+  transform: translateX(-2px);
+}
+.spl-toggle-slot {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.spl-detail-body {
+  min-width: 0;
+  padding: 2px 2px 4px;
+}
+.spl-detail-body .spl-page-body {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.spl-detail-body .ac-hint:first-child {
+  margin-top: 0;
+}
+
+/* ---- slide between the list and one category ---- */
+.spl-menu.is-out-left {
+  opacity: 0;
+  transform: translateX(-24px);
+  pointer-events: none;
+}
+.spl-menu.is-in-left {
+  opacity: 0;
+  transform: translateX(-24px);
+}
+.spl-detail.is-in-right {
+  opacity: 0;
+  transform: translateX(24px);
+}
+.spl-detail.is-out-right {
+  opacity: 0;
+  transform: translateX(24px);
+  pointer-events: none;
+}
+/* a page pushed inside a page slides in from the right; leaving it, the outer one returns from the left */
+.spl-detail-body { transition: opacity .2s ease, transform .2s ease; }
+.spl-detail-body.is-in-right { opacity: 0; transform: translateX(24px); }
+.spl-detail-body.is-in-left { opacity: 0; transform: translateX(-24px); }
+
+/* the rows arrive once, staggered, when the page first paints */
+@keyframes spl-row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.spl-menu.is-intro .spl-row {
+  animation: spl-row-in 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+/* A link list: the row opens another page, so a secondary control rides beside it. */
+.spl-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.spl-item > .spl-row {
+  flex: 1;
+  min-width: 0;
+}
+.spl-trailing {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+.spl-tile .lucide-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* Touch: the way back is a primary control, so give it a full finger target. */
+@media (pointer: coarse) {
+  .spl-back {
+    min-height: 44px;
+    padding-inline: 10px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spl-menu,
+  .spl-detail,
+  .spl-detail-body,
+  .spl-chev-back {
+    transition: none;
+  }
+  .spl-menu.is-intro .spl-row {
+    animation: none;
+  }
+}

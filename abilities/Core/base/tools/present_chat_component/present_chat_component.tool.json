@@ -1,0 +1,56 @@
+{
+  "name": "present_chat_component",
+  "description": "Show the user a panel in the chat: a choice, form, status or todo list.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "component_id": {
+        "maxLength": 64,
+        "type": "string"
+      },
+      "data": {
+        "type": "object"
+      },
+      "dismiss": {
+        "type": "boolean"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "placement": {
+        "enum": [
+          "inline",
+          "hover",
+          "sticky"
+        ],
+        "type": "string"
+      },
+      "title": {
+        "maxLength": 80,
+        "type": "string"
+      },
+      "type": {
+        "enum": [
+          "todo_list",
+          "status",
+          "choice",
+          "form"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "core": true,
+  "effect": "read",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "display_name": "Task Progress",
+  "kind": "virtual_core",
+  "description": "This session's task list: sections of steps the agent tracks as it works, seeded from an approved plan.",
+  "tools": [],
+  "icon": "list-checks",
+  "color": "#bb9af7",
+  "order": 1,
+  "placeholder": false,
+  "readiness": "ready",
+  "owner_tier": [
+    "free",
+    "administrator"
+  ]
+}

@@ -1,0 +1,1373 @@
+// Shared application state and cross-boundary helpers used by API and loop.
+const DEFAULT_AGENT_MODEL: &str = "gpt-6-luna";
+
+#[derive(Clone)]
+struct App {
+    runtime: Arc<RwLock<loop_runtime::Config>>,
+    runtime_path: PathBuf,
+    compaction_config_path: PathBuf,
+    store: Store,
+    // Authentication actor remains distinct from canonical conversation storage.
+    chat_actor: Option<String>,
+    chat_access: Option<shared_chat::SessionAccess>,
+    abilities: Arc<abilities::Catalog>,
+    gate: Arc<Mutex<()>>,
+    provider: provider::Provider,
+    refresh: Arc<Mutex<()>>,
+    login: Arc<RwLock<Option<Value>>>,
+    active: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    slots: Arc<Semaphore>,
+    ready: Arc<AtomicBool>,
+    stop: CancellationToken,
+    login_attempts: webagent_accounts::LoginAttempts,
+    control_dir: PathBuf,
+    tool_socket: PathBuf,
+    build_socket: PathBuf,
+    secure: bool,
+    chat_ui_config_path: PathBuf,
+    message_api_token_hash: Option<[u8; 32]>,
+    browser_login_bridge: Option<browser_login::Bridge>,
+}
+use webagent_configuration::digest;
+use webagent_host_core::key;
+pub(crate) use webagent_host_core::{bad, conflict, now, uuid, Api, ApiError};
+fn terminal(status: &str) -> bool {
+    webagent_engine::runtime::failure::terminal(status)
+}
+fn status(run: &Value) -> &str {
+    run["status"].as_str().unwrap_or("failed")
+}
+// CONTEXT-PUBLIC-SUMMARY: publish measured numeric totals only, never arbitrary
+// persisted report fields, overlays, schema descriptions or transcript content.
+fn public_context_summary(run: &Value) -> Value {
+    let report = &run["context_assembly_report"];
+    if report["version"] != 1 || report["scope"] != "logical_call_envelope" {
+        return Value::Null;
+    }
+    let fields = [
+        "envelope_bytes",
+        "max_bytes",
+        "history_json_bytes",
+        "instruction_json_bytes",
+        "schemas_json_bytes",
+        "turn",
+        "call",
+    ];
+    let mut summary = serde_json::Map::new();
+    for field in fields {
+        let Some(value) = report[field].as_u64() else {
+            return Value::Null;
+        };
+        summary.insert(field.into(), json!(value));
+    }
+    summary.insert(
+        "accounting".into(),
+        json!("serialized_json_bytes_not_provider_tokens"),
+    );
+    Value::Object(summary)
+}
+fn bounded_model_authorization_failure_stage(error: &anyhow::Error) -> &'static str {
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || error.chain().any(|cause| cause.is::<serde_json::Error>())
+    {
+        return "plan_decode";
+    }
+    if error.downcast_ref::<sqlx::Error>().is_some()
+        || error.chain().any(|cause| cause.is::<sqlx::Error>())
+        || error.downcast_ref::<std::io::Error>().is_some()
+        || error.chain().any(|cause| cause.is::<std::io::Error>())
+    {
+        return "storage";
+    }
+    const KNOWN: &[(&str, &str)] = &[
+        (
+            "Legacy run has no pinned role; start a new message after configuring Standard",
+            "plan_missing",
+        ),
+        ("Invalid pinned model plan identity", "plan_identity"),
+        ("Candidate missing", "candidate_missing"),
+        ("Selection candidates exhausted", "candidate_missing"),
+        ("Model entry removed", "candidate_missing"),
+        ("Model connection removed", "candidate_missing"),
+        (
+            "Pinned model is no longer available to this caller",
+            "model_grant",
+        ),
+        ("Model grant revoked", "model_grant"),
+        ("Candidate grant revoked", "candidate_grant"),
+        (
+            "Pinned model candidate is no longer authorized",
+            "candidate_grant",
+        ),
+        ("Model candidate is not authorized", "candidate_grant"),
+        ("Platform provenance removed", "platform"),
+        ("Platform provenance changed", "platform"),
+        ("Platform provenance missing from plan", "platform"),
+        ("Published model lacks role capability", "platform"),
+        (
+            "Selected model connection is unavailable",
+            "candidate_grant",
+        ),
+        ("Agent model roster required", "candidate_grant"),
+        ("Invalid agent model roster", "candidate_grant"),
+        (
+            "Invalid or duplicate role backup candidates",
+            "candidate_grant",
+        ),
+        ("Standard model required", "model_grant"),
+        ("Premium model required", "model_grant"),
+        ("Image In model required", "model_grant"),
+        ("Image Out model required", "model_grant"),
+        ("System model required", "model_grant"),
+        ("Voice model required", "model_grant"),
+        ("Decision model required", "model_grant"),
+        ("BYO model outside tier", "model_grant"),
+        ("Adopted platform transport changed", "platform"),
+        ("Selected model is outside agent roster", "candidate_grant"),
+        ("Role entry missing", "candidate_grant"),
+        ("Model connection missing", "candidate_grant"),
+        (
+            "Role model is incompatible or not authorized",
+            "candidate_grant",
+        ),
+        ("Account not found", "account"),
+        ("Account identity conflict", "account"),
+        ("Invalid access identity", "account"),
+        ("Guest access is not enabled", "account"),
+        ("Entitlement tier not found", "tier"),
+        ("Tier identity conflict", "tier"),
+        ("Invalid entitlement tier", "tier"),
+        ("Invalid entitlement grant", "tier"),
+        ("Membership identity or revision conflict", "membership"),
+        ("Membership capability level is missing", "membership"),
+        ("Agent directory entry missing", "agent_owner"),
+        ("Agent owner conflict", "agent_owner"),
+        ("Invalid agent metadata", "agent_owner"),
+    ];
+    for cause in error.chain() {
+        // Compare only exact internal messages; never return or log message text.
+        let message = cause.to_string();
+        if let Some((_, stage)) = KNOWN.iter().find(|(known, _)| *known == message.as_str()) {
+            return stage;
+        }
+    }
+    "unknown"
+}
+
+// Publish model identity at the pinned failover cursor, never credentials.
+fn public_run_model(run: &Value) -> Value {
+    webagent_engine::output::public_run_model(run)
+}
+async fn public_runs(app: &App, views: Vec<Value>) -> Result<Vec<Value>> {
+    let mut result = Vec::with_capacity(views.len());
+    for view in views {
+        // Paused views need the owning record's private component marker; old
+        // views need its model fields; runs under review need their parallel calls,
+        // which views omit. Read through Store and project only safe fields.
+        if view["status"] == "paused" || view["status"] == "recovery" || view["model"].is_null() {
+            let run = app
+                .run(
+                    view["id"]
+                        .as_str()
+                        .ok_or_else(|| anyhow!("Run id missing"))?,
+                )
+                .await?;
+            result.push(public_run(&run));
+        } else {
+            result.push(public_run(&view));
+        }
+    }
+    shared_projection::runs(app, &mut result).await?;
+    Ok(result)
+}
+// Project existing public run fields and fixed host component-pause metadata without private context.
+/// Parallel calls awaiting recovery review: what ran, with which arguments, and the IDs
+/// needed to diagnose it and to resolve each call separately.
+fn uncertain_calls(run: &Value) -> Value {
+    let calls = run["batch"].as_array().map_or_else(Vec::new, |items| {
+        items
+            .iter()
+            // A call a restart left executing in a run under review is unresolved too.
+            .filter(|item| {
+                item["state"] == "uncertain"
+                    || (item["state"] == "executing" && run["status"] == "recovery")
+            })
+            .map(|item| {
+                let pending = &item["pending"];
+                json!({"call_id":pending["call_id"],"name":pending["name"],
+                    "arguments":pending["arguments"],"interaction_id":pending["id"],
+                    "transport_request_id":pending["failure"]["transport_request_id"]})
+            })
+            .collect()
+    });
+    json!(calls)
+}
+
+fn public_run(run: &Value) -> Value {
+    json!({"id":run["id"],"session_id":run["session_id"],"status":run["status"],"error":run["error"],
+        "component_pause":if run["status"]=="paused"&&run["component_pause"]["version"]==1&&run["component_pause"]["component"].as_str().is_some_and(crate::engine_components::working_component) {json!({"version":1,"component":run["component_pause"]["component"],"reason":"component_unavailable"})}else{Value::Null},
+        "pending":run["pending"],"uncertain":run["uncertain"],"turns":run["turns"],
+        "parked":run["parked"] == true,
+        "phase":crate::task_progress::known_phase(&run["phase"]),
+        "uncertain_calls":uncertain_calls(run),
+        "tool_failure":tools::failure::project(&run["latest_tool_failure"]),
+        "attachments":run["attachments"].as_array().cloned().unwrap_or_default(),
+        "model":public_run_model(run),
+        "usage":usage::public(&run["usage"]),
+        "compactions":run["compactions"].as_u64().unwrap_or(0),
+        "context_controls":{"trigger_tokens":run["context_controls"]["trigger_tokens"].as_u64(),"tail_tokens":run["context_controls"]["tail_tokens"].as_u64(),"characters_per_token":run["context_controls"]["characters_per_token"].as_u64(),"bytes_per_token":run["context_controls"]["bytes_per_token"].as_f64()},
+        "mode":run["dispatch_mode"],
+        "chat_model_revision":run["chat_model_revision"].as_u64(),
+        "context_summary":public_context_summary(run)})
+}
+// Explicit allowlists prevent arbitrary persisted fields becoming diagnostic text.
+fn public_assembly_attempt(event: &Value) -> Value {
+    let Some(attempt) = event["attempt_id"]
+        .as_str()
+        .filter(|s| uuid::Uuid::parse_str(s).is_ok())
+    else {
+        return Value::Null;
+    };
+    let source = &event["report"];
+    let mut report = serde_json::Map::new();
+    for field in [
+        "max_bytes",
+        "instructions_json_bytes",
+        "base_content_bytes",
+        "guidance_content_bytes",
+        "schemas_json_bytes",
+        "history_json_bytes",
+        "framing_bytes",
+        "history_budget_bytes",
+        "summary_reserve_bytes",
+        "trigger_tokens_estimated",
+        "tail_tokens_estimated",
+        "characters_per_token",
+    ] {
+        if let Some(n) = source[field].as_u64() {
+            report.insert(field.into(), json!(n));
+        }
+    }
+    let outcome = match source["outcome"].as_str() {
+        Some("ready") => "ready",
+        Some("compaction_required") => "compaction_required",
+        Some("failed") => "failed",
+        _ => "unknown",
+    };
+    let code = source["failure_code"]
+        .as_str()
+        .filter(|c| {
+            matches!(
+                *c,
+                "invalid_contribution"
+                    | "overhead_exceeds_budget"
+                    | "summary_reserve_unavailable"
+                    | "envelope_exceeds_budget"
+                    | "invalid_measurements"
+                    | "no_safe_boundary"
+                    | "stale_plan"
+                    | "summary_length"
+                    | "summary_did_not_shrink"
+                    | "summary_missing"
+                    | "summary_source_limit"
+                    | "system_summary_input_unavailable"
+                    | "manual_no_safe_boundary"
+                    | "assembly_internal"
+            )
+        })
+        .unwrap_or_default();
+    let stage = source["stage"]
+        .as_str()
+        .filter(|s| {
+            matches!(
+                *s,
+                "assembly"
+                    | "selection"
+                    | "instructions"
+                    | "budget"
+                    | "compaction_plan"
+                    | "summary_input"
+                    | "summary_validation"
+            )
+        })
+        .unwrap_or("unknown");
+    report.insert("outcome".into(), json!(outcome));
+    report.insert("failure_code".into(), json!(code));
+    report.insert("stage".into(), json!(stage));
+    let mut compaction = serde_json::Map::new();
+    for field in [
+        "candidate_boundaries",
+        "pending_calls",
+        "duplicate_calls",
+        "unmatched_calls_or_results",
+        "source_limit_rejections",
+        "tail_byte_rejections",
+        "tail_character_rejections",
+    ] {
+        if let Some(n) = source["compaction"][field].as_u64() {
+            compaction.insert(field.into(), json!(n));
+        }
+    }
+    report.insert("compaction".into(), Value::Object(compaction));
+    json!({"attempt_id":attempt,"report":report})
+}
+fn run_diagnostics(run: &Value) -> Value {
+    const CHECKPOINTS: [&str; 8] = [
+        "admission",
+        "attachment_preparation",
+        "context_assembly",
+        "model_dispatch",
+        "model_output",
+        "pre_tool",
+        "tool_result",
+        "publication",
+    ];
+    let checkpoints = CHECKPOINTS
+        .iter()
+        .filter_map(|name| {
+            let receipt = run.pointer(&format!("/workflow/receipts/{name}"))?;
+            let decision = receipt["result"]["decision"].as_str()?;
+            if !matches!(decision, "pass" | "reject") {
+                return None;
+            }
+            let reason_code = if decision == "reject" {
+                match receipt["result"]["reason"].as_str() {
+                    Some("Publication exceeds configured limit") => "publication_limit",
+                    Some("Tool invocation denied")
+                    | Some("Tool invocation denied by policy or invalid arguments") => {
+                        "tool_denied"
+                    }
+                    _ => "rejected",
+                }
+            } else {
+                ""
+            };
+            Some(
+                json!({"checkpoint":name,"decision":decision,"reason_code":reason_code,
+            "policy_revision":receipt["policy_revision"],"turn":receipt["turn"],
+            "call_index":receipt["call_index"]}),
+            )
+        })
+        .collect::<Vec<_>>();
+    json!({"run_id":run["id"],"session_id":run["session_id"],"status":run["status"],
+        "uncertain":run["uncertain"],"checkpoints":checkpoints,
+        "tool_failure":tools::failure::project(&run["latest_tool_failure"]),
+        "repeat_guard":webagent_engine::tools::retry_guard::diagnostics(run),
+        "context_summary":public_context_summary(run),
+        "latest_context_assembly":public_assembly_attempt(&run["latest_context_assembly"]),
+        "last_successful_assembly":public_context_summary(run),
+        "ability_context":abilities::public_context(&run["ability_context"])})
+}
+async fn run_diagnostics_api(
+    State(app): State<App>,
+    Path((sid, rid)): Path<(String, String)>,
+) -> Api {
+    let _guard = app.gate.lock().await;
+    if app.store.get(&key("session", &sid)).await?.is_none() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Session not found".into()));
+    }
+    let run = app
+        .run(&rid)
+        .await
+        .map_err(|_| ApiError(StatusCode::NOT_FOUND, "Run not found".into()))?;
+    if run["session_id"] != sid {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Run not found".into()));
+    }
+    let mut diagnostic = run_diagnostics(&run);
+    diagnostic["reasoning_cleanup_logical_bytes_removed"] =
+        json!(app.store.reasoning_cleanup_total(&sid).await?);
+    Ok(Json(diagnostic))
+}
+/// Grouped run-health issues of the session's conversation tree (the session, its spawn root
+/// and the sub-agents under it): counts, kinds, tool names and message templates only.
+async fn session_issues_api(State(app): State<App>, Path(sid): Path<String>) -> Api {
+    if app.store.get(&key("session", &sid)).await?.is_none() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Session not found".into()));
+    }
+    Ok(Json(app.store.issues(Some(&sid), 0).await?))
+}
+// Session access is checked again against the durable run before projecting
+// progress. The projection contains no model, tool, or user message content.
+async fn run_progress_api(State(app): State<App>, Path((sid, rid)): Path<(String, String)>) -> Api {
+    let _guard = app.gate.lock().await;
+    if app.store.get(&key("session", &sid)).await?.is_none() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Session not found".into()));
+    }
+    let run = app
+        .run(&rid)
+        .await
+        .map_err(|_| ApiError(StatusCode::NOT_FOUND, "Run not found".into()))?;
+    if run["session_id"] != sid {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Run not found".into()));
+    }
+    Ok(Json(task_progress::project(&run)))
+}
+fn required<'a>(body: &'a Value, name: &str, max: usize) -> std::result::Result<&'a str, ApiError> {
+    let s = body[name]
+        .as_str()
+        .ok_or_else(|| bad(&format!("{name} is required")))?;
+    if s.is_empty() || s.len() > max {
+        return Err(bad(&format!("{name} has invalid length")));
+    }
+    Ok(s)
+}
+async fn assembled_instructions(store: &Store) -> Result<String> {
+    assembled_agent_instructions(store, "shared_default").await
+}
+async fn assembled_agent_instructions(store: &Store, agent_id: &str) -> Result<String> {
+    context_assembly::pinned_instructions(
+        provider::DEFAULT_INSTRUCTIONS,
+        &store.list_agent_prompt_slots(agent_id).await?,
+    )
+}
+/// Advance a pinned cursor only for a typed, safe pre-response failure.
+fn model_failure(run: &mut Value, error: &anyhow::Error) -> Result<()> {
+    webagent_engine::runtime::failure::model_failure(run, error)
+}
+// Diagnostic ownership comes from the caller's Store, never model/run arguments.
+fn trusted_model_failure(
+    store: &Store,
+    run: &mut Value,
+    error: &anyhow::Error,
+    system: bool,
+) -> Result<()> {
+    webagent_engine::runtime::failure::trusted_model_failure(
+        &diagnostics::EngineModelDiagnostics,
+        store,
+        run,
+        error,
+        system,
+    )
+}
+// Compaction has its own pinned System cursor. Failover must never rewrite the chat role.
+fn system_dispatch_run(run: &Value) -> Result<Value> {
+    webagent_engine::runtime::failure::system_dispatch_run(run)
+}
+fn system_model_failure(run: &mut Value, error: &anyhow::Error) -> Result<()> {
+    webagent_engine::runtime::failure::system_model_failure(run, error)
+}
+// System requests use their own model ceiling, including instructions and JSON framing.
+#[cfg(test)]
+fn system_summary_input(
+    context: &loop_runtime::Context,
+    selection: &provider::ProviderSelection,
+    prompt: String,
+    max_bytes: usize,
+) -> Result<Vec<Value>> {
+    let input = vec![json!({"role":"user","content":prompt})];
+    validate_system_summary_input(
+        context,
+        selection,
+        &input,
+        provider::DEFAULT_INSTRUCTIONS,
+        max_bytes,
+    )?;
+    Ok(input)
+}
+/// Validate the complete summary envelope, including current instructions, against the System model and workflow byte ceilings.
+fn validate_system_summary_input(
+    context: &loop_runtime::Context,
+    selection: &provider::ProviderSelection,
+    input: &[Value],
+    instructions: &str,
+    max_bytes: usize,
+) -> Result<()> {
+    webagent_engine::runtime::failure::validate_system_summary_input(
+        context,
+        selection,
+        input,
+        instructions,
+        max_bytes,
+    )
+}
+
+#[cfg(test)]
+mod model_authorization_stage_tests {
+    use super::*;
+    #[test]
+    fn model_authorization_failure_stage_is_bounded_and_content_free() {
+        let malformed: serde_json::Error = serde_json::from_str::<Value>("{").unwrap_err();
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&anyhow::Error::new(malformed)),
+            "plan_decode"
+        );
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&anyhow::Error::new(
+                sqlx::Error::RowNotFound
+            )),
+            "storage"
+        );
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&anyhow::anyhow!("BYO model outside tier")),
+            "model_grant"
+        );
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&anyhow::anyhow!(
+                "Role model is incompatible or not authorized"
+            )),
+            "candidate_grant"
+        );
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&anyhow::anyhow!("Agent owner conflict")),
+            "agent_owner"
+        );
+        let hostile = anyhow::anyhow!("account secret: bearer-token and private model label");
+        assert_eq!(
+            bounded_model_authorization_failure_stage(&hostile),
+            "unknown"
+        );
+    }
+}
+
+#[cfg(test)]
+mod system_budget_tests {
+    use super::*;
+    // Different role profiles must not let a large Standard budget authorize a smaller System request.
+    #[test]
+    fn compaction_uses_system_profile_and_counts_escaped_envelope() {
+        let mut context = loop_runtime::Config::default().context;
+        let standard = provider::ProviderSelection {
+            provider: provider::ProviderId::OpenaiSubscription,
+            model: "standard".into(),
+        };
+        let system = provider::ProviderSelection {
+            provider: provider::ProviderId::OpenaiSubscription,
+            model: "system".into(),
+        };
+        context.model_profiles.insert(
+            "openai_subscription/system".into(),
+            loop_runtime::ModelBudget {
+                context_tokens: 512,
+                output_reserve_tokens: 64,
+                bytes_per_token: 1,
+            },
+        );
+        let prompt = "\"\\\n".repeat(200);
+        assert!(system_summary_input(&context, &standard, prompt.clone(), 262144).is_ok());
+        assert!(system_summary_input(&context, &system, prompt, 262144).is_err());
+        assert!(system_summary_input(&context, &standard, "small".into(), 8).is_err());
+    }
+}
+fn live_tool_decision(
+    app: &App,
+    access: &access_policy::LiveAccess,
+    name: &str,
+    visibility: &Value,
+    state: &Value,
+    loaded: &Value,
+) -> access::ToolDecision {
+    app.engine()
+        .live_tool_decision(access, name, visibility, state, loaded)
+}
+fn filter_ability_entry(
+    app: &App,
+    access: &access_policy::LiveAccess,
+    entry: &mut Value,
+    visibility: &Value,
+    state: &Value,
+    loaded: &Value,
+) -> bool {
+    app.engine()
+        .filter_ability_entry(access, entry, visibility, state, loaded)
+}
+fn default_session_mode() -> Value {
+    webagent_engine::runtime::policy::default_session_mode()
+}
+async fn agent_abilities(app: &App) -> Result<Value> {
+    app.store.agent_abilities().await
+}
+async fn session_agent_id(app: &App, sid: &str) -> Result<String> {
+    app.engine().session_agent_id(sid).await
+}
+async fn session_agent_abilities(app: &App, sid: &str) -> Result<Value> {
+    app.engine().session_agent_abilities(sid).await
+}
+fn default_session_abilities() -> Value {
+    webagent_engine::runtime::policy::default_session_abilities()
+}
+async fn session_ability_state(app: &App, sid: &str) -> Result<Value> {
+    app.engine().session_ability_state(sid).await
+}
+async fn ability_controls(app: &App, sid: &str) -> Result<(u64, Value, Value)> {
+    app.engine().ability_controls(sid).await
+}
+fn invalidate_waiting_run(mut run: Value) -> Value {
+    run["pending"]["state"] = json!("requested");
+    run["pending"]["decision"] = Value::Null;
+    run["status"] = json!("queued");
+    run["updated_at"] = json!(now());
+    run
+}
+async fn session_mode(app: &App, sid: &str) -> Result<Value> {
+    app.engine().session_mode(sid).await
+}
+fn marker(app: &App, shutoff: bool) -> Result<()> {
+    let lock = File::open(app.control_dir.join("dispatch.lock"))?;
+    lock.lock_exclusive()?;
+    let result = (|| {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(app.control_dir.join("shutoff"))?;
+        f.write_all(if shutoff { b"1" } else { b"0" })?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    FileExt::unlock(&lock)?;
+    result
+}
+/// Shared API/loop coordination folder (`/runtime/control`); never part of state.
+fn control_root() -> PathBuf {
+    std::env::var_os("V3_CONTROL_ROOT").map_or_else(
+        || webagent_configuration::paths::runtime().join("control"),
+        PathBuf::from,
+    )
+}
+/// Restore persisted global control after launcher initialization, including API-only replacement.
+/// Never infer enablement from container health: a saved shutoff remains disabled.
+async fn restore_worker_control(app: &App) -> Result<()> {
+    marker(app, app.shutoff().await?)
+}
+impl App {
+    async fn run(&self, id: &str) -> Result<Value> {
+        self.store
+            .get(&key("run", id))
+            .await?
+            .ok_or_else(|| anyhow!("Run not found"))
+    }
+    async fn shutoff(&self) -> Result<bool> {
+        Ok(self
+            .store
+            .get("control")
+            .await?
+            .unwrap_or(json!({"shutoff":true}))["shutoff"]
+            .as_bool()
+            .unwrap_or(true))
+    }
+    /// Deletion is durable across API/loop processes. The epoch also catches a
+    /// archive/restore occurring between polls; old work can never resume.
+    async fn session_operation<T>(
+        &self,
+        sid: &str,
+        cancel: CancellationToken,
+        operation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        crate::shared_chat::guard_operation(&self.store, sid, cancel, operation).await
+    }
+    async fn save(&self, run: &mut Value) -> Result<()> {
+        // Terminal documents are immutable in storage. Preserve their last
+        // timestamp so an idempotent save remains identical across seconds.
+        if !matches!(
+            run["status"].as_str(),
+            Some("completed" | "cancelled" | "failed")
+        ) || run["updated_at"].is_null()
+        {
+            run["updated_at"] = json!(now());
+        }
+        let public = public_run(run);
+        self.store
+            .save_run_observed(run, "run_status", &public)
+            .await
+    }
+    async fn save_override(&self, run: &mut Value) -> Result<()> {
+        run["updated_at"] = json!(now());
+        let public = public_run(run);
+        self.store
+            .save_run_override_observed(run, "run_status", &public)
+            .await
+    }
+    async fn selection(&self) -> Result<provider::ProviderSelection> {
+        let value = self.store.agent_model().await?;
+        provider::ProviderSelection::parse(&value, DEFAULT_AGENT_MODEL)
+    }
+    /// Rehydrate published platform metadata at admission, then freeze it for this run.
+    async fn pin_model_plan(&self, plan: &mut model_selection::SelectionPlan) -> Result<()> {
+        self.models_runtime()
+            .pin_model_plan(
+                plan,
+                shared_chat::actor(self),
+                self.chat_access.as_ref().map(|a| a.session_id.as_str()),
+                &ModelSessionAuthority(&self.store),
+            )
+            .await
+    }
+    async fn run_model_authorized(&self, run: &Value) -> bool {
+        match self.run_candidate(run).await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run["id"].as_str().unwrap_or("unknown"),
+                    stage = bounded_model_authorization_failure_stage(&error),
+                    "Pinned model authorization failed"
+                );
+                false
+            }
+        }
+    }
+    async fn run_candidate(&self, run: &Value) -> Result<Option<model_selection::Candidate>> {
+        if !crate::modules::binding_valid(self, run).await {
+            return Err(anyhow!("Module admission revoked"));
+        }
+        self.models_runtime()
+            .run_candidate(run, &ModelSessionAuthority(&self.store))
+            .await
+    }
+    async fn tokens_for(
+        &self,
+        selection: &provider::ProviderSelection,
+        run: &Value,
+    ) -> Result<Value> {
+        if !crate::modules::binding_valid(self, run).await {
+            return Err(anyhow!("Module admission revoked"));
+        }
+        self.models_runtime()
+            .tokens_for(selection, run, &ModelSessionAuthority(&self.store))
+            .await
+    }
+
+    pub(crate) async fn tokens_at(&self, reference: &str) -> Result<Value> {
+        self.models_runtime().tokens_at(reference).await
+    }
+}
+// Exit fixed offline smoke before state initialization; otherwise initialize the selected role at the shared v3 root.
+/// Tools whose arguments the build broker (`build-service/`, released through the broker's own
+/// lane) reads and validates itself: an asset-only release cannot be checked against that code,
+/// and the broker refuses an action or argument it does not know with a precise error.
+const BROKER_SERVED_TOOLS: [&str; 2] = ["build_work", "performance_work"];
+
+/// Why the abilities folder `abilities` cannot replace the live ones: the catalog does not
+/// load, an Administrator tool folder is invalid, a tool folder is skipped, or a tool schema
+/// breaks the rules the shared argument check enforces. With `baseline` (the published
+/// release root, whose code serves the tools) it also may not change what a tool's code
+/// receives, unless the tool's plugin package ships new code or the broker serves it
+/// ([`BROKER_SERVED_TOOLS`]). Used by the release check and by live App Default Saves.
+pub(crate) fn ability_problems(
+    abilities: &std::path::Path,
+    baseline: Option<&std::path::Path>,
+) -> Vec<String> {
+    use webagent_abilities::tool_definitions;
+    use webagent_engine::tools::arguments;
+    let mut problems = Vec::new();
+    if let Err(error) = abilities::Catalog::load_snapshot(abilities) {
+        problems.push(format!("The abilities do not load: {error:#}"));
+    }
+    #[cfg(feature = "administrator")]
+    match webagent_administration::schemas::load(abilities) {
+        Ok(administrator) => problems.extend(administrator.problems),
+        Err(error) => problems.push(format!("Invalid Administrator tool folders: {error:#}")),
+    }
+    let (candidate, skipped) = tool_definitions::load_all(abilities);
+    problems.extend(
+        candidate.iter().flat_map(|(name, definition)| {
+            arguments::schema_problems(name, &definition.parameters)
+        }),
+    );
+    let Some(baseline) = baseline else {
+        return problems;
+    };
+    let (live, live_skipped) = tool_definitions::load_all(&baseline.join("abilities"));
+    // A tool folder the release already skipped is not this candidate's problem.
+    problems.extend(
+        skipped
+            .into_iter()
+            .filter(|problem| !live_skipped.contains(problem)),
+    );
+    let shipping =
+        tool_definitions::package_tools_with_code_changes(&baseline.join("abilities"), abilities);
+    for (name, definition) in live.iter().filter(|(name, _)| {
+        !shipping.contains(*name) && !BROKER_SERVED_TOOLS.contains(&name.as_str())
+    }) {
+        match candidate.get(name) {
+            Some(next) => problems.extend(arguments::contract_changes(
+                name,
+                &definition.parameters,
+                &next.parameters,
+            )),
+            None => problems.push(format!(
+                "{name}: definition removed or renamed, but the code serving it is unchanged"
+            )),
+        }
+    }
+    problems
+}
+
+async fn run_process() -> Result<()> {
+    // Before any database opens: every account's database needs several open files.
+    let open_files = webagent_platform::process::raise_open_file_limit();
+    if std::env::args().any(|argument| argument == "--boot-plan") {
+        #[cfg(feature = "linked-context")]
+        {
+            // Stable host CLI calls the library directly, before state or credentials initialize.
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+            if bytes.len() > 65536 {
+                anyhow::bail!("Boot input bounds");
+            }
+            let input: webagent_boot_contracts::Request = serde_json::from_slice(&bytes)?;
+            println!(
+                "{}",
+                serde_json::to_string(&webagent_boot_supervisor::plan(&input)?)?
+            );
+            return Ok(());
+        }
+        #[cfg(feature = "live-context")]
+        anyhow::bail!("Linked boot planner unavailable in live core");
+    }
+    if std::env::args().nth(1).as_deref() == Some("--voice-service") {
+        // The voice service (dictation or speech), started by the API as a child process.
+        let arg = |n| std::env::args().nth(n).unwrap_or_default();
+        return webagent_media::voice_service(&arg(2), &arg(3)).map_err(anyhow::Error::msg);
+    }
+    if std::env::args().nth(1).as_deref() == Some("--inference-service") {
+        // The local inference service (embeddings), started by the API as a child process.
+        return webagent_inference::serve();
+    }
+    if std::env::args().nth(1).as_deref() == Some("--config-match-eval") {
+        // Score the matcher against request sets (crates/modules/inference/eval/*-set.jsonl).
+        return webagent_inference::evaluate(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--tool-match-eval") {
+        // Score tool and list_skills ranking (crates/modules/inference/eval/tool-match-eval.jsonl).
+        return crate::tool_match_eval::evaluate(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if std::env::args().nth(1).as_deref() == Some("--find-eval") {
+        // Score file_search find ranking (crates/modules/administration/eval/find-eval.jsonl).
+        #[cfg(all(feature = "local-worker", feature = "administrator"))]
+        return crate::find_eval::evaluate(&std::env::args().skip(2).collect::<Vec<_>>());
+        #[cfg(not(all(feature = "local-worker", feature = "administrator")))]
+        anyhow::bail!("This build has no local tool worker");
+    }
+    if std::env::args().nth(1).as_deref() == Some("--tool-worker") {
+        // The tool worker, started by the container launcher under the worker identity.
+        #[cfg(feature = "local-worker")]
+        return Ok(webagent_worker::serve(webagent_worker::Config::from_env()?).await?);
+        #[cfg(not(feature = "local-worker"))]
+        anyhow::bail!("This build has no local tool worker");
+    }
+    if std::env::args().any(|argument| argument == "--context-smoke") {
+        println!("{}", crate::engine_components::context_smoke().await?);
+        return Ok(());
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("webagent_v3=info".parse()?)
+                // Engine warnings say why a run was stopped, refused or deferred.
+                .add_directive("webagent_engine=warn".parse()?)
+                // One line per model call with cache statistics (cache_estimate.rs).
+                .add_directive("webagent_engine::runtime::cache_estimate=info".parse()?)
+                // One line per experimental keep-alive ping (keep_alive.rs).
+                .add_directive("webagent_engine::runtime::keep_alive=info".parse()?),
+        )
+        .init();
+    if let Some(path) = std::env::args()
+        .skip(1)
+        .find_map(|arg| arg.strip_prefix("--validate-assets=").map(PathBuf::from))
+    {
+        // Tool schemas come from the candidate's own tool folders.
+        webagent_abilities::tool_definitions::use_root(path.join("abilities"));
+        let catalog = abilities::Catalog::load_snapshot(&path.join("abilities"))?;
+        // With `--validate-baseline=<live root>` (an asset-only release ships no Rust code)
+        // tool schemas also keep what their code receives.
+        let baseline = std::env::args()
+            .skip(1)
+            .find_map(|arg| arg.strip_prefix("--validate-baseline=").map(PathBuf::from));
+        let problems = ability_problems(&path.join("abilities"), baseline.as_deref());
+        anyhow::ensure!(
+            problems.is_empty(),
+            "Abilities cannot be released: {}",
+            problems.join("; ")
+        );
+        let engine = crate::engine_components::load(&path, "candidate")?;
+        let prompts: Value =
+            serde_json::from_slice(&crate::live_assets::prompt_defaults_at(Some(&path))?)?;
+        crate::api::live_configuration::validate_source_prompts(&prompts)?;
+        for id in [
+            "app_ui",
+            "chat",
+            "context_compaction",
+            "tool_output_retention",
+            "access_policy",
+            "message_visibility",
+            "closing_status",
+        ] {
+            let file = if id == "access_policy" {
+                webagent_access::policy_file::LIVE_POLICY.to_owned()
+            } else {
+                crate::api::live_configuration::live(id)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow!("Unknown live configuration"))?
+            };
+            let bytes = std::fs::read(path.join(file))?;
+            if id == "tool_output_retention" {
+                crate::tool_output::Policy::parse(&bytes)
+                    .map_err(|_| anyhow!("Candidate retention validation failed"))?;
+            }
+            let value: Value = serde_json::from_slice(&bytes)?;
+            crate::api::live_configuration::validate(id, &value)?;
+        }
+        // The remaining live files, through their owners' readers; an absolute path reads
+        // exactly the candidate's file.
+        loop_runtime::Config::read(&path.join(webagent_engine::runtime::config::LIVE))?;
+        webagent_diagnostics::config::Config::read(
+            &path.join(webagent_diagnostics::config::Config::LIVE),
+        )?;
+        webagent_engine::components::validate_controls(
+            &path.join(webagent_engine::components::LIVE),
+        )?;
+        let providers = webagent_models::providers::validate_folder(
+            &path.join(webagent_models::providers::FOLDER),
+        )?;
+        // Composition is read-only: no model preparation, credential access or provider dispatch.
+        let state_root = webagent_configuration::paths::state();
+        let effective = provider::Provider::instructions_for_snapshot("", &state_root, Some(&path))
+            .map_err(|_| anyhow!("Effective prompt validation failed"))?;
+        // This reader uses mounted state/current fallback, independently of the candidate source above.
+        // Validation containers have no checkout: validate the candidate's own live file.
+        let mounted_retention = crate::tool_output::Policy::read_in(&[path.clone()])
+            .map_err(|_| anyhow!("Candidate retention validation failed"))?;
+        println!(
+            "{}",
+            json!({"catalog_version":catalog.version(),"abilities":catalog.ids().len(),"engine_components":engine.entries.len(),"providers":providers,
+            "effective_prompt_digest":digest(&json!(effective)),
+            "mounted_retention_digest":digest(&json!(mounted_retention))})
+        );
+        return Ok(());
+    }
+    // Logged only for the services: `--validate-assets` prints its JSON result on stdout.
+    tracing::info!(open_files = ?open_files, "Open-file limit");
+    let root = webagent_configuration::paths::state();
+    let role = std::env::var("V3_PROCESS_ROLE").unwrap_or_else(|_| "api".into());
+    if role == "health" {
+        let url = format!("sqlite://{}?mode=ro", root.join("db/app.db").display());
+        let pool = sqlx::SqlitePool::connect(&url).await?;
+        let age:Option<i64>=sqlx::query_scalar(
+            "SELECT CAST(strftime('%s','now') AS INTEGER)-updated_at FROM loop_heartbeat WHERE singleton=1 AND protocol_version=1")
+            .fetch_optional(&pool).await?;
+        pool.close().await;
+        return if age.is_some_and(|age| age >= 0 && age <= 10) {
+            Ok(())
+        } else {
+            Err(anyhow!("V3 loop heartbeat is stale"))
+        };
+    }
+    // `desktop` runs the API and the loop in one process (installed apps, no containers).
+    if !matches!(role.as_str(), "api" | "loop" | "desktop") {
+        return Err(anyhow!("Invalid v3 process role"));
+    }
+    let desktop = role == "desktop";
+    std::fs::create_dir_all(&root)?;
+    // One loop per installation: the lock is runtime coordination, never kept in state.
+    // The container launcher (`--launch`) creates the control files; a desktop process
+    // has no launcher, so it creates any that are missing (dispatch starts switched on).
+    if desktop {
+        std::fs::create_dir_all(control_root())?;
+        for (name, content) in [("dispatch.lock", ""), ("shutoff", "0")] {
+            let path = control_root().join(name);
+            if !path.exists() {
+                std::fs::write(path, content)?;
+            }
+        }
+    }
+    let lock = if role == "loop" || desktop {
+        std::fs::create_dir_all(control_root())?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(control_root().join("loop.lock"))?;
+        lock.try_lock_exclusive()
+            .map_err(|_| anyhow!("Another v3 loop owns this state"))?;
+        Some(lock)
+    } else {
+        None
+    };
+    // Live configuration files are saved through the broker, before any owner reads them.
+    // A desktop install has no broker: the app saves its own copy of the live files.
+    if desktop {
+        crate::live_files::install_direct();
+    }
+    crate::live_files::install(PathBuf::from(
+        std::env::var("V3_BUILD_SOCKET").unwrap_or_else(|_| {
+            webagent_configuration::paths::runtime()
+                .join("build/build.sock")
+                .to_string_lossy()
+                .into_owned()
+        }),
+    ));
+    let store = Store::open(&root).await?;
+    // Plugin packages follow the API's role in a desktop process.
+    let service_role = if desktop { "api" } else { role.as_str() };
+    diagnostics::init(&root, &store, service_role).await;
+    optimization::init(&root, service_role).await;
+    mcp::bridge::init(&root, service_role).await;
+    store.migrate_agent_storage(&root).await?;
+    let (runtime, runtime_path) = loop_runtime::Config::live()?;
+    // The live policy file, reread at call boundaries; fail start-up only if it is invalid.
+    let compaction_config_path = context_compaction::Config::configured_path();
+    context_compaction::Config::configured()?;
+    crate::engine_components::initialize(&root)?;
+    store.configure_cache(
+        runtime.cache.document_budget_bytes,
+        runtime.cache.context_budget_bytes,
+    );
+    // The temporary development bootstrap credential had no generation. Retire it
+    // once so this installation follows the same first-run setup flow as v2.
+    if store
+        .get("admin")
+        .await?
+        .is_some_and(|v| v["generation"].is_null())
+    {
+        store.delete("admin").await?;
+    }
+    for (k, v) in [
+        ("settings", json!({"model":DEFAULT_AGENT_MODEL})),
+        ("control", json!({"shutoff":false})),
+    ] {
+        if store.get(k).await?.is_none() {
+            store.put(k, &v).await?;
+        }
+    }
+    store.backfill_shared_directory().await?;
+    migrate_default_agent_model(&store).await?;
+    migrate_provider_selection(&store).await?;
+    // Catalog roles become authoritative once; later clears never restore legacy defaults.
+    model_selection_api::migrate_legacy_default(&store).await?;
+    crate::tools::install_tool_defaults();
+    let abilities_root = std::env::var("V3_ABILITIES_ROOT").unwrap_or_else(|_| {
+        webagent_configuration::paths::app()
+            .join("abilities")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let catalog = abilities::Catalog::load(&PathBuf::from(abilities_root))?;
+    store.ensure_agent_connections(&catalog.ids()).await?;
+    let bridge = Arc::new(harness_bridge::Queue(store.clone()));
+    let app = App {
+        runtime: Arc::new(RwLock::new(runtime)),
+        runtime_path,
+        compaction_config_path,
+        browser_login_bridge: browser_login::Bridge::configure(
+            &std::env::var("V3_BROWSER_LOGIN_TOKEN").unwrap_or_default(),
+            &std::env::var("V3_BROWSER_LOGIN_CALLER_ID").unwrap_or_default(),
+        )?,
+        message_api_token_hash: message_api_token_hash(
+            &std::env::var("V3_MESSAGE_API_TOKEN").unwrap_or_default(),
+        )?,
+        store,
+        chat_actor: None,
+        chat_access: None,
+        abilities: Arc::new(catalog),
+        gate: Arc::new(Mutex::new(())),
+        provider: provider::Provider::new().with_bridge(bridge),
+        refresh: Arc::new(Mutex::new(())),
+        login: Arc::new(RwLock::new(None)),
+        active: Arc::new(Mutex::new(HashMap::new())),
+        slots: Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
+        ready: Arc::new(AtomicBool::new(false)),
+        stop: CancellationToken::new(),
+        login_attempts: webagent_accounts::LoginAttempts::default(),
+        control_dir: control_root(),
+        tool_socket: PathBuf::from(std::env::var("V3_TOOL_SOCKET").unwrap_or_else(|_| {
+            webagent_configuration::paths::runtime()
+                .join("worker/tools.sock")
+                .to_string_lossy()
+                .into_owned()
+        })),
+        build_socket: PathBuf::from(std::env::var("V3_BUILD_SOCKET").unwrap_or_else(|_| {
+            webagent_configuration::paths::runtime()
+                .join("build/build.sock")
+                .to_string_lossy()
+                .into_owned()
+        })),
+        secure: std::env::var("V3_SECURE_COOKIE").unwrap_or_else(|_| "true".into()) != "false",
+        // Checkout-relative: read live (`live-files.json`) on every use.
+        chat_ui_config_path: PathBuf::from(webagent_chat::configuration::LIVE_CHAT),
+    };
+    // Each half stops on SIGTERM or Ctrl-C; a desktop process also when the app window
+    // closes its standard input (`V3_STOP_ON_STDIN_EOF=1`).
+    let stop = CancellationToken::new();
+    if std::env::var_os("V3_STOP_ON_STDIN_EOF").is_some_and(|value| value == "1") {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut sink = Vec::new();
+            let _ = tokio::io::stdin().read_to_end(&mut sink).await;
+            stop.cancel();
+        });
+    }
+    match role.as_str() {
+        "loop" => serve_loop(app, lock, stop).await,
+        "api" => serve_api(app, true, stop).await,
+        _ => {
+            // The loop drains its runs after the API stops taking requests, then closes
+            // the shared database pools.
+            let worker = tokio::spawn(serve_loop(app.clone(), lock, stop.clone()));
+            let api = serve_api(app, false, stop.clone()).await;
+            stop.cancel();
+            worker.await??;
+            api
+        }
+    }
+}
+
+/// The agent loop: recovers and dispatches runs until stopped, then drains them.
+async fn serve_loop(app: App, lock: Option<std::fs::File>, stop: CancellationToken) -> Result<()> {
+    let progress = agent_loop::watchdog::Progress::new();
+    let _watchdog = agent_loop::watchdog::Watchdog::start(progress.clone())?;
+    restore_worker_control(&app).await?;
+    recover(&app, true).await?;
+    app.ready.store(true, Ordering::Release);
+    // Load the local inference model and embed the skill catalog before the first message;
+    // best effort, so a failure only slows the first list_skills.
+    let warm = app.clone();
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        match crate::tools::core_skills::warm_inference(&warm).await {
+            Some(items) => tracing::info!(
+                items,
+                seconds = started.elapsed().as_secs_f32(),
+                "Local inference warmed"
+            ),
+            None => tracing::warn!("Local inference warm-up failed"),
+        }
+    });
+    let mut scheduler = tokio::spawn(futures_util::FutureExt::boxed(scheduler_with_progress(
+        app.clone(),
+        progress.clone(),
+    )));
+    let mut signal = webagent_platform::signal::terminate()?;
+    tokio::select! {
+        _=signal.recv()=>{},
+        _=tokio::signal::ctrl_c()=>{},
+        _=stop.cancelled()=>{},
+        result=&mut scheduler=>{
+            // A dispatcher panic/early return must terminate the supervised
+            // process rather than leave healthy lease renewers running alone.
+            return Err(anyhow!("Loop dispatcher exited unexpectedly: {}", if result.is_err() {"task failure"} else {"early return"}));
+        }
+    }
+    // Drain: clearing `ready` stops dispatch and pauses each run before its next
+    // step, so a planned restart cuts off only calls that outlast the timeout.
+    app.ready.store(false, Ordering::Release);
+    // Mark this restart as planned for startup recovery, unless the broker already
+    // recorded its deploy job there.
+    let cause = app.control_dir.join("restart-cause.json");
+    if !cause.exists() {
+        let _ = std::fs::write(&cause, br#"{"planned":true}"#);
+    }
+    let drain = Duration::from_secs(app.runtime.read().await.scheduler.drain_timeout_seconds);
+    let started = tokio::time::Instant::now();
+    let active = app.active.lock().await.len();
+    crate::diagnostics::lifecycle(
+        "Loop drain started",
+        json!({"active_runs":active,"drain_timeout_seconds":drain.as_secs()}),
+    );
+    while !app.active.lock().await.is_empty() && started.elapsed() < drain {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let remaining = app.active.lock().await.len();
+    crate::diagnostics::lifecycle(
+        "Loop drain ended",
+        json!({"reason":if remaining == 0 {"all_paused"} else {"timeout"},
+            "seconds":started.elapsed().as_secs(),"cut_off_runs":remaining}),
+    );
+    app.stop.cancel();
+    for token in app.active.lock().await.values() {
+        token.cancel();
+    }
+    // A stuck gate must not make SIGTERM wait forever.
+    if tokio::time::timeout(Duration::from_secs(12), &mut scheduler)
+        .await
+        .is_err()
+    {
+        scheduler.abort();
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
+    while !app.active.lock().await.is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = marker(&app, true);
+    app.stop.cancel();
+    for token in app.active.lock().await.values() {
+        token.cancel();
+    }
+    let _ = app.store.clear_loop_heartbeat().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    app.store.pool.close().await;
+    app.store.agent_pool.close().await;
+    app.store.app_pool.close().await;
+    drop(lock);
+    Ok(())
+}
+
+/// The HTTP API; `close_pools` is false when a loop in this process still needs them.
+async fn serve_api(app: App, close_pools: bool, stop: CancellationToken) -> Result<()> {
+    restore_worker_control(&app).await?;
+    app.ready.store(true, Ordering::Release);
+    let listener = tokio::net::TcpListener::bind(
+        std::env::var("V3_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into()),
+    )
+    .await?;
+    tracing::info!("WebAgent v3 API ready");
+    let notification_relay = tokio::spawn(futures_util::FutureExt::boxed(
+        api::notifications::service(app.clone()),
+    ));
+    #[cfg(feature = "administrator")]
+    let administrator_watch = tokio::spawn(futures_util::FutureExt::boxed(
+        administrator_services::watch(app.clone()),
+    ));
+    tokio::spawn(crate::phase3_api::sweep_browser_folders(app.clone()));
+    tokio::spawn(api::storage_cleanup::service(app.clone()));
+    #[cfg(unix)]
+    tokio::spawn(api::host_admin::watch(app.clone()));
+    let shutdown = app.clone();
+    axum::serve(
+        listener,
+        router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let mut signal = webagent_platform::signal::terminate().expect("signal handler");
+        tokio::select! {_=signal.recv()=>{},_=tokio::signal::ctrl_c()=>{},_=stop.cancelled()=>{}}
+        shutdown.ready.store(false, Ordering::Release);
+        shutdown.stop.cancel();
+    })
+    .await?;
+    app.stop.cancel();
+    #[cfg(feature = "administrator")]
+    let _ = administrator_watch.await;
+    let _ = notification_relay.await;
+    if close_pools {
+        app.store.pool.close().await;
+        app.store.agent_pool.close().await;
+        app.store.app_pool.close().await;
+    }
+    Ok(())
+}
+
+struct ModelSessionAuthority<'a>(&'a Store);
+impl webagent_models::runtime::SessionAuthority for ModelSessionAuthority<'_> {
+    fn live_access<'a>(
+        &'a self,
+        user: &'a str,
+        session: &'a str,
+        agent: &'a str,
+    ) -> impl std::future::Future<Output = Result<access_policy::LiveAccess>> + Send + 'a {
+        shared_chat::live_access(self.0, user, session, agent)
+    }
+}
+impl App {
+    fn models_runtime(&self) -> webagent_models::runtime::Runtime<'_, Store> {
+        webagent_models::runtime::Runtime::new(
+            self.store.models_repository(),
+            self.provider.transport(),
+            &self.gate,
+            &self.refresh,
+            &self.login,
+            &self.stop,
+        )
+    }
+}
+// Root host state completes native adapters without teaching Engine authentication fields.
+#[derive(Clone)]
+struct EngineHostState {
+    pub(crate) login_attempts: webagent_accounts::LoginAttempts,
+    pub(crate) secure: bool,
+    pub(crate) chat_ui_config_path: PathBuf,
+    pub(crate) message_api_token_hash: Option<[u8; 32]>,
+    pub(crate) browser_login_bridge: Option<browser_login::Bridge>,
+}
+impl EngineHostState {
+    pub(crate) fn new(app: &App) -> Self {
+        Self {
+            login_attempts: app.login_attempts.clone(),
+            secure: app.secure,
+            chat_ui_config_path: app.chat_ui_config_path.clone(),
+            message_api_token_hash: app.message_api_token_hash,
+            browser_login_bridge: app.browser_login_bridge.clone(),
+        }
+    }
+}
+impl EngineHostState {
+    pub(crate) fn app(
+        &self,
+        view: webagent_engine::runtime::native::View<
+            '_,
+            Store,
+            loop_runtime::NativeSchemas,
+            abilities::Catalog,
+            shared_chat::SessionAccess,
+        >,
+    ) -> App {
+        App {
+            store: view.store.clone(),
+            abilities: view.catalog.clone(),
+            chat_actor: view.actor.map(str::to_owned),
+            chat_access: view.binding.cloned(),
+            runtime: view.handles.runtime.clone(),
+            runtime_path: view.handles.runtime_path.clone(),
+            compaction_config_path: view.handles.compaction_config_path.clone(),
+            gate: view.handles.gate.clone(),
+            active: view.handles.active.clone(),
+            slots: view.handles.slots.clone(),
+            ready: view.handles.ready.clone(),
+            stop: view.handles.stop.clone(),
+            control_dir: view.handles.control_dir.clone(),
+            provider: view.provider.clone(),
+            refresh: view.refresh.clone(),
+            login: view.login.clone(),
+            tool_socket: view.tool_socket.to_owned(),
+            build_socket: view.build_socket.to_owned(),
+            login_attempts: self.login_attempts.clone(),
+            secure: self.secure,
+            chat_ui_config_path: self.chat_ui_config_path.clone(),
+            message_api_token_hash: self.message_api_token_hash,
+            browser_login_bridge: self.browser_login_bridge.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod engine_host_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn current_native_view_overrides_captured_host_defaults() {
+        let (_captured_root, captured) = crate::runtime_tests::fixture().await;
+        let (_current_root, current) = crate::runtime_tests::fixture().await;
+        let host = EngineHostState::new(&captured);
+        let handles = webagent_engine::runtime::Handles {
+            runtime: current.runtime.clone(),
+            runtime_path: current.runtime_path.clone(),
+            compaction_config_path: current.compaction_config_path.clone(),
+            control_dir: current.control_dir.clone(),
+            gate: current.gate.clone(),
+            active: current.active.clone(),
+            slots: current.slots.clone(),
+            ready: current.ready.clone(),
+            stop: current.stop.clone(),
+        };
+        let reconstructed = host.app(webagent_engine::runtime::native::View {
+            store: &current.store,
+            catalog: &current.abilities,
+            actor: Some("current-actor"),
+            binding: None,
+            handles: &handles,
+            provider: &current.provider,
+            refresh: &current.refresh,
+            login: &current.login,
+            tool_socket: &current.tool_socket,
+            build_socket: &current.build_socket,
+        });
+        assert_eq!(reconstructed.store.root, current.store.root);
+        assert_ne!(reconstructed.store.root, captured.store.root);
+        assert_eq!(reconstructed.chat_actor.as_deref(), Some("current-actor"));
+        assert!(reconstructed.chat_access.is_none());
+        assert!(Arc::ptr_eq(&reconstructed.abilities, &current.abilities));
+        assert!(Arc::ptr_eq(&reconstructed.runtime, &current.runtime));
+        assert!(reconstructed
+            .login_attempts
+            .shares_state_with(&captured.login_attempts));
+    }
+}

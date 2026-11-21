@@ -1,0 +1,108 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+function fixture(profile={},positions=[500,1000]) {
+  const timers=new Map(),frames=new Map();let serial=0,rows=[],calls=[],resized=null;
+  const listeners={};
+  const scroller={scrollTop:0,scrollHeight:2000,clientHeight:400,
+    getBoundingClientRect:()=>({top:0}),
+    scrollTo({top,behavior}){this.scrollTop=top;if(behavior!=='instant')calls.push(top);},
+    addEventListener(name,fn){listeners[name]=fn;}};
+  const inner={querySelectorAll:()=>rows,style:{getPropertyValue:()=>0,setProperty(){},removeProperty(){}}};
+  const row=(id,top)=>({dataset:{publicId:id},getBoundingClientRect:()=>({top:top-scroller.scrollTop+62})});
+  rows=positions.map((top,i)=>row(String(i),top));
+  const context={AbortController,performance:{now:()=>10},matchMedia:()=>({matches:false}),
+    ResizeObserver:class{constructor(fn){resized=fn;}observe(){}disconnect(){}},
+    setTimeout(fn){const id=++serial;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id),
+    requestAnimationFrame(fn){const id=++serial;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),
+    setInterval:()=>0,clearInterval(){}};
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(__dirname+'/transcript-anchor.js','utf8').replace('export function','function'),context);
+  const api=context.mountTranscriptAnchor({scroller,inner,header:{getBoundingClientRect:()=>({bottom:0})},getProfile:()=>({user_turn_anchor:profile})});
+  const flush=map=>{const tasks=[...map.values()];map.clear();tasks.forEach(fn=>fn());};
+  function move(top,settle=true){listeners.wheel();scroller.scrollTop=top;listeners.scroll();if(settle)flush(timers);}
+  return {api,move,calls,scroller,inner,resize:targets=>resized(targets.map(target=>({target}))),flushFrames:()=>flush(frames),finish:()=>listeners.scrollend(),reproject:()=>{rows=positions.map((top,i)=>row(String(i),top));}};
+}
+test('snap once, ignore nearby movement, rearm at 100px in either direction',()=>{
+  for(const sign of [-1,1]){
+    const f=fixture();f.move(500+sign*20);assert.deepEqual(f.calls,[500]);f.finish();
+    f.move(500+sign*10);assert.equal(f.calls.length,1);
+    f.move(500+sign*99);f.move(500+sign*15);assert.equal(f.calls.length,1);
+    f.move(500+sign*100,false);f.move(500+sign*21);assert.equal(f.calls.length,1);
+    f.move(500+sign*20);assert.deepEqual(f.calls,[500,500]);f.finish();
+    f.move(500+sign*10);assert.equal(f.calls.length,2);
+  }
+});
+test('send/open landing consumes the anchor, including after row reprojection',()=>{
+  const f=fixture();f.api.focus();f.flushFrames();assert.equal(f.scroller.scrollTop,1000);
+  f.reproject();f.move(1010);assert.equal(f.calls.length,0);
+  f.move(1100,false);f.move(1010);assert.deepEqual(f.calls,[1000]);
+});
+test('cooldowns are per bubble and reset between conversations',()=>{
+  const f=fixture();f.move(510);f.finish();f.move(1010);assert.deepEqual(f.calls,[500,1000]);f.finish();
+  f.api.reset();f.move(1010);assert.deepEqual(f.calls,[500,1000,1000]);
+});
+test('custom device margin and rearm distance are read live',()=>{
+  const profile={snap_distance_px:10,snap_rearm_distance_px:150};
+  const f=fixture(profile);f.move(515);assert.equal(f.calls.length,0);f.move(510);f.finish();
+  f.move(600);f.move(510);assert.equal(f.calls.length,1);
+  f.move(650,false);f.move(510);assert.equal(f.calls.length,2);f.finish();
+  profile.snap_distance_px=30;f.move(700,false);f.move(525);assert.equal(f.calls.length,3);
+});
+test('disabled snap and overlapping boundaries do not repeatedly capture',()=>{
+  const disabled=fixture({snap_enabled:false});disabled.move(510);assert.equal(disabled.calls.length,0);
+  const f=fixture({snap_distance_px:20,snap_rearm_distance_px:5});f.move(510);f.finish();f.move(510);assert.equal(f.calls.length,1);
+});
+
+test('shared landing zone blocks both directions while preserving per-side cooldowns',()=>{
+  const f=fixture();f.move(510);f.finish();f.move(490);assert.equal(f.calls.length,1);
+  f.move(600,false);f.move(490);f.finish();assert.equal(f.calls.length,2);
+  f.move(510);assert.equal(f.calls.length,2);
+  f.move(400,false);f.move(510);f.finish();assert.equal(f.calls.length,3);
+  f.move(490);assert.equal(f.calls.length,3);
+});
+test('direction margins and distances differ within a device profile',()=>{
+  const f=fixture({up:{snap_distance_px:10,snap_rearm_distance_px:150},down:{snap_distance_px:30,snap_rearm_distance_px:80}});
+  f.move(515);assert.equal(f.calls.length,0);f.move(510);f.finish();
+  f.move(420,false);f.move(470);f.finish();assert.equal(f.calls.length,2);
+  f.move(600,false);f.move(510);assert.equal(f.calls.length,2);
+  f.move(650,false);f.move(510);f.finish();assert.equal(f.calls.length,3);
+  f.move(421,false);f.move(480);assert.equal(f.calls.length,3);
+  f.move(420,false);f.move(480);assert.equal(f.calls.length,4);
+});
+test('one direction can be disabled without disabling the other',()=>{
+  const f=fixture({up:{snap_enabled:false},down:{snap_enabled:true}});
+  f.move(510);assert.equal(f.calls.length,0);f.move(490);assert.deepEqual(f.calls,[500]);
+});
+
+test('close bubbles cannot alternate snaps within the 500px landing zone',()=>{
+  for(const sign of [-1,1]) {
+    const f=fixture({snap_distance_px:100,snap_rearm_distance_px:500},[500,550]);
+    f.move(510);f.finish();assert.deepEqual(f.calls,[500]);
+    f.move(540);f.move(490);f.move(560);assert.equal(f.calls.length,1);
+    f.reproject();f.move(540);assert.equal(f.calls.length,1);
+    f.move(500+sign*499,false);f.move(540);assert.equal(f.calls.length,1);
+    f.move(500+sign*500,false);f.move(540);f.finish();
+    assert.deepEqual(f.calls,[500,550]);
+    f.move(510);assert.equal(f.calls.length,2);
+  }
+});
+test('programmatic snap completion and layout do not unlock the neighborhood',()=>{
+  const f=fixture({snap_distance_px:100,snap_rearm_distance_px:500},[500,550]);
+  f.move(510);f.finish();f.api.changed();f.flushFrames();f.move(540);
+  assert.equal(f.calls.length,1);
+  f.api.reset();f.move(540);assert.deepEqual(f.calls,[500,550]);
+});
+test('keyboard-sized scroller changes keep the transcript fixed while content growth follows the tail',()=>{
+  const f=fixture({enabled:false});f.scroller.scrollTop=1600;
+  f.scroller.clientHeight=200;f.resize([f.scroller]);f.flushFrames();assert.equal(f.scroller.scrollTop,1600);
+  f.scroller.scrollHeight=2300;f.resize([f.inner]);f.flushFrames();assert.equal(f.scroller.scrollTop,2300);
+});
+test('tail space accumulates so a landing beyond the scroll range settles instead of oscillating',()=>{
+  const f=fixture({},[500,1900]);const values={'--v3-anchor-extra':'138px'};let top=0;
+  f.inner.style={getPropertyValue:name=>values[name]||'',setProperty:(name,value)=>{values[name]=value;},removeProperty:name=>{delete values[name];}};
+  const max=()=>Math.max(0,f.scroller.scrollHeight-f.scroller.clientHeight);
+  Object.defineProperty(f.scroller,'scrollHeight',{configurable:true,get:()=>1862+(parseFloat(values['--v3-anchor-extra'])||0)});
+  Object.defineProperty(f.scroller,'scrollTop',{configurable:true,get:()=>top,set:value=>{top=Math.min(max(),Math.max(0,value));}});
+  f.api.updateRuns([{status:'running'}]);
+  for(let round=0;round<3;round++){f.api.focus();f.flushFrames();assert.equal(f.scroller.scrollTop,1900);assert.equal(values['--v3-anchor-extra'],'438px');}
+});

@@ -1,0 +1,123 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const tick=()=>new Promise(setImmediate);
+const msg=seq=>({seq,id:'message-'+seq,role:'assistant',content:'reply'});
+const snapshot=(messages=[],runs=[])=>({messages,runs,last_seq:Math.max(0,...messages.map(m=>m.seq))});
+async function fixture(issues) {
+ const streams=[],saved=new Map([['a',snapshot([],[{id:'run',session_id:'a',status:'running'}])],['b',snapshot()]]),published=[],notes=[],timers=new Map(),delays=[],calls=[],queues=[],metadata=[];
+ let nextTimer=0,failRender=0,readOverride=null,metadataHook=()=>{};
+ class EventSource {constructor(url){this.url=url;streams.push(this);}addEventListener(name,fn){(this.listeners??={})[name]=fn;}close(){this.closed=true;}emit(item){this.onmessage({data:JSON.stringify(item)});}}
+ const context=vm.createContext({document:{getElementById:()=>null},EventSource,Set,Map,setTimeout:(fn,ms)=>{timers.set(++nextTimer,fn);delays.push(ms);return nextTimer;},clearTimeout:id=>timers.delete(id)});
+ const module=new vm.SourceTextModule(fs.readFileSync(path.join(__dirname,'client.js'),'utf8'),{context});
+ await module.link(specifier=>specifier.includes('storage-notice')?new vm.SyntheticModule(['createStorageNotice'],function(){this.setExport('createStorageNotice',()=>async()=>{});},{context}):specifier.includes('conversation-cache')?new vm.SyntheticModule(['readConversation','saveConversation','forgetConversation','mergeDelta'],function(){this.setExport('readConversation',async()=>null);this.setExport('saveConversation',async()=>{});this.setExport('forgetConversation',async()=>{});this.setExport('mergeDelta',(cached,data)=>data.messages);},{context}):new vm.SyntheticModule(['createAdministratorNotices'],function(){this.setExport('createAdministratorNotices',()=>({start(){},stop(){}}));},{context}));await module.evaluate();
+ const client=module.namespace.createChatClient({request:async url=>{if(url.endsWith('/visit'))return {recorded:false};const id=url.split('?')[0].split('/').at(-1);calls.push(id);return readOverride?readOverride(id):structuredClone(saved.get(id));},note:text=>notes.push(text),issues});
+ async function open(id){await client.open(id,()=>{},(item,options)=>{if(failRender){--failRender;throw Error('render failed');}published.push({item,options});},summary=>{metadata.push(summary);metadataHook(summary);},data=>queues.push(data));}
+ return {client,streams,saved,published,notes,timers,delays,calls,queues,metadata,metadataHook:fn=>metadataHook=fn,open,failRender:n=>failRender=n,override:fn=>readOverride=fn};
+}
+test('terminal poll restores dropped final event exactly once',async()=>{
+ const f=await fixture();await f.open('a');f.saved.set('a',snapshot([msg(3)]));f.client.updateRuns([{id:'run',session_id:'a',status:'completed'}]);await tick();
+ assert.deepEqual(f.published.map(x=>x.item.seq),[3]);assert.equal(f.published[0].options.recovered,true);
+ f.client.updateRuns([{id:'run',session_id:'a',status:'completed'}]);f.streams[0].emit(msg(3));await tick();assert.equal(f.published.length,1);assert.equal(f.calls.length,2);f.client.disconnect();
+});
+// The first open follows the snapshot directly; only a later open is a reconnect that recovers.
+const reconnect=stream=>{stream.onopen();stream.onopen();};
+test('first stream open does not refetch the snapshot it follows',async()=>{
+ const f=await fixture();await f.open('a');const calls=f.calls.length;f.streams[0].onopen();await tick();assert.equal(f.calls.length,calls);f.client.disconnect();
+});
+test('reconnect fills older gap below newer delivered event',async()=>{
+ const f=await fixture();await f.open('a');f.streams[0].emit(msg(9));f.saved.set('a',snapshot([msg(5),msg(9)]));reconnect(f.streams[0]);await tick();assert.deepEqual(f.published.map(x=>x.item.seq),[9,5]);f.client.disconnect();
+});
+test('render failure recovers despite browser Last-Event-ID advancement',async()=>{
+ const f=await fixture();await f.open('a');f.saved.set('a',snapshot([msg(2)]));f.failRender(1);f.streams[0].emit(msg(2));await tick();assert.deepEqual(f.published.map(x=>x.item.seq),[2]);assert.equal(f.published[0].options.recovered,true);f.client.disconnect();
+});
+test('overlapping triggers coalesce and completion mid-fetch gets fresh snapshot',async()=>{
+ const f=await fixture();await f.open('a');let resolve,count=0;f.override(()=>++count===1?new Promise(r=>resolve=r):snapshot([msg(4)]));
+ reconnect(f.streams[0]);f.client.updateRuns([{id:'run',session_id:'a',status:'completed'}]);assert.equal(count,1);resolve(snapshot());await tick();assert.equal(count,2);assert.equal(f.published.length,1);f.client.disconnect();
+});
+test('delayed old session response cannot publish into new session',async()=>{
+ const f=await fixture();await f.open('a');let resolve;f.override(id=>id==='a'?new Promise(r=>resolve=r):snapshot());reconnect(f.streams[0]);await f.open('b');resolve(snapshot([msg(6)]));await tick();assert.equal(f.published.length,0);assert.equal(f.streams[0].closed,true);f.client.disconnect();
+});
+const fireRetry=async f=>{assert.equal(f.timers.size,1);const [id,fn]=f.timers.entries().next().value;f.timers.delete(id);fn();await tick();};
+test('without an issue tracker the history note shows once while retries continue, and disconnect cancels scheduled retry',async()=>{
+ const f=await fixture();await f.open('a');f.override(()=>{throw Error('offline');});f.streams[0].onerror();await tick();
+ for(let i=0;i<5;i++)await fireRetry(f);
+ assert.equal(f.timers.size,1);assert.equal(f.notes.length,1);f.client.disconnect();assert.equal(f.timers.size,0);
+ const g=await fixture();await g.open('a');g.override(()=>{throw Error('offline');});g.streams[0].onerror();await tick();assert.equal(g.timers.size,1);g.client.disconnect();assert.equal(g.timers.size,0);
+});
+test('chat sync issue keeps retrying with capped backoff and resolves once the server answers',async()=>{
+ const events=[];const f=await fixture({fail:(operation,error,id)=>events.push(['fail',operation,id]),resolve:(operation,id)=>events.push(['resolve',operation,id])});
+ await f.open('a');f.override(()=>{throw Error('offline');});f.streams[0].onerror();await tick();
+ for(let i=0;i<8;i++)await fireRetry(f);
+ assert.deepEqual(f.delays,[1000,2000,4000,8000,16000,30000,30000,30000,30000]);assert.deepEqual(events.at(-1),['fail','chat_sync','a']);
+ f.override(null);await fireRetry(f);
+ assert.equal(f.timers.size,0);assert.deepEqual(events.at(-1),['resolve','chat_sync','a']);assert.equal(f.notes.length,0);f.client.disconnect();
+});
+test('other session completion does not fetch current snapshot',async()=>{
+ const f=await fixture();await f.open('a');f.client.updateRuns([{id:'other',session_id:'b',status:'completed'}]);await tick();assert.equal(f.calls.length,1);f.client.disconnect();
+});
+test('transcript inserts recovered gaps in order without replacing existing rows',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8'),code=source.slice(source.indexOf('function message(item,'),source.indexOf('// Base presentation'));
+ const children=[],target={children,insertBefore(row,before){const index=children.indexOf(before);children.splice(index<0?children.length:index,0,row);}};
+ const context=vm.createContext({$:()=>target,createMessage:item=>({dataset:{publicId:item.id,seq:String(item.seq)}}),resolveAsset:undefined,gutterRuns:new Map(),client:{},issues:null,session:'a',historyLastSeq:0,historyAction(){},note(){},stats:{},readObserver:{observe(){}},paintActivity(){},updateAdmission(){}});
+ vm.runInContext(code,context);for(const seq of [9,5,9,2])context.message(msg(seq));assert.deepEqual(children.map(x=>Number(x.dataset.seq)),[2,5,9]);assert.equal(context.historyLastSeq,9);
+});
+
+test('named queue events refresh delivery state without duplicating public messages',async()=>{
+ const f=await fixture();await f.open('a');f.saved.set('a',{...snapshot([msg(7)]),queue:[{id:'submission',status:'pending'}],queue_state:{revision:1}});
+ f.streams[0].listeners.queue_updated();await tick();assert.equal(f.queues.length,1);assert.equal(f.queues[0].queue[0].status,'pending');assert.equal(f.published.length,1);
+ f.saved.set('a',{...snapshot([msg(7)]),queue:[{id:'submission',status:'cancelled'}],queue_state:{revision:2}});f.streams[0].listeners.queue_updated();await tick();assert.equal(f.queues[1].queue[0].status,'cancelled');assert.equal(f.published.length,1);
+ await f.open('b');f.streams[0].listeners.queue_updated();await tick();assert.equal(f.queues.length,2);f.client.disconnect();
+});
+
+test('queue recovery detects history rewind before publication and waits for reopened history',async()=>{
+ const f=await fixture();await f.open('a');f.saved.set('a',{...snapshot([msg(2)]),session:{id:'a',history_revision:1},queue:[],queue_state:{revision:8}});
+ f.streams[0].listeners.queue_updated();await tick();assert.equal(f.metadata[0].history_revision,1);assert.equal(f.published.length,0);assert.equal(f.queues.length,0);
+ f.streams[0].emit(msg(9));assert.equal(f.published.length,0);
+ // A response captured before Undo cannot reintroduce removed messages while reopening is deferred.
+ f.saved.set('a',snapshot([msg(10)]));reconnect(f.streams[0]);await tick();assert.equal(f.published.length,0);
+ f.saved.set('a',{...snapshot([msg(2)]),session:{id:'a',history_revision:1}});await f.open('a');f.saved.set('a',{...snapshot([msg(2),msg(11)]),session:{id:'a',history_revision:1},queue:[]});f.streams.at(-1).listeners.queue_updated();await tick();assert.deepEqual(f.published.map(x=>x.item.seq),[11]);assert.equal(f.queues.length,1);f.client.disconnect();
+});
+test('queue rewind callback opening another session invalidates the old recovery',async()=>{
+ const f=await fixture();await f.open('a');f.metadataHook(()=>{void f.open('b');});f.saved.set('a',{...snapshot([msg(5)]),session:{id:'a',history_revision:1}});f.streams[0].listeners.queue_updated();await tick();assert.equal(f.streams[0].closed,true);assert.equal(f.published.length,0);assert.equal(f.queues.length,0);f.client.disconnect();
+});
+test('panel snapshot merge refuses different history revisions and other sessions',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8'),start=source.indexOf('function syncSnapshot(data)'),code=source.slice(start,source.indexOf('/** Confirms rewind',start));
+ const published=[],updates=[],changes=[],disclosures=[];
+ const context=vm.createContext({session:'a',historyRevision:2,historyLastSeq:4,privacyNotice:mode=>disclosures.push(mode),sharedAccess:null,canManageQueue:true,historyChanged:s=>changes.push(s),message:item=>published.push(item),transcriptWindow:{accept:()=>true},paintActivity(){},followups:{update:data=>updates.push(data)},runs(){}});vm.runInContext(code,context);
+ assert.equal(context.syncSnapshot({session:{id:'a',history_revision:1},messages:[msg(8)]}),false);assert.equal(context.syncSnapshot({session:{id:'b',history_revision:2},messages:[msg(9)]}),false);assert.equal(published.length,0);assert.equal(updates.length,0);
+ assert.equal(context.syncSnapshot({session:{id:'a',history_revision:2},conversation_privacy:'operator_reviewable',access:{observer:true,can_manage_queue:false},last_seq:7,messages:[msg(7)],queue:[]}),true);assert.equal(context.historyLastSeq,7);assert.equal(published.length,1);assert.equal(updates.length,1);assert.equal(disclosures.length,2);assert.equal(disclosures.at(-1),'operator_reviewable');assert.equal(context.canManageQueue,false);
+});
+
+test('actual activity render failure stays open through message and resolves on successful render',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8');
+ const paint=source.slice(source.indexOf('const paintActivity='),source.indexOf('  const client = createChatClient'));
+ const message=source.slice(source.indexOf('function message(item,'),source.indexOf('// Base presentation'));
+ const children=[],target={children,insertBefore(row){children.push(row);}};let broken=true;const active=new Set(),events=[];
+ const context=vm.createContext({$:()=>target,activity:{render(){if(broken)throw Error('render failed');}},activityRuns:[],createMessage:item=>({dataset:{publicId:item.id,seq:String(item.seq)}}),resolveAsset:undefined,gutterRuns:new Map(),client:{},issues:{fail(operation){active.add(operation);events.push('opened');},resolve(operation){if(active.delete(operation))events.push('resolved');}},session:'a',historyLastSeq:0,historyAction(){},note(){},stats:{},readObserver:{observe(){}},updateAdmission(){}});
+ vm.runInContext(paint+message+';this.paint=paintActivity;',context);context.message(msg(1));assert.deepEqual([...active],['activity_display']);assert.deepEqual(events,['opened']);broken=false;context.paint();assert.deepEqual([...active],[]);assert.deepEqual(events,['opened','resolved']);
+});
+
+test('background history reopen reports matching recovery and ignores a superseded response',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8'),code=source.slice(source.indexOf('async function reopenHistory('),source.indexOf('/** Rewinds rebuild'));
+ const events=[],pending=[];const context=vm.createContext({session:'a',sessionGeneration:0,issues:{fail:(operation,error,id)=>events.push(['failed',id]),resolve:(operation,id)=>events.push(['resolved',id])},note(){}});
+ context.open=()=>{context.sessionGeneration++;return new Promise((resolve,reject)=>pending.push({resolve,reject}));};vm.runInContext(code,context);
+ const first=context.reopenHistory('a');pending[0].reject(Error('offline'));await first;assert.deepEqual(events,[['failed','a']]);
+ const stale=context.reopenHistory('a');context.session='b';context.sessionGeneration++;pending[1].resolve();await stale;assert.deepEqual(events,[['failed','a']]);
+ context.session='a';const recovery=context.reopenHistory('a');pending[2].resolve();await recovery;assert.deepEqual(events,[['failed','a'],['resolved','a']]);
+});
+
+test('privacy lookup failure cannot abort the chat shell when its optional notice is absent',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8');
+ const code=source.slice(source.indexOf('  let privacyMode=null;'),source.indexOf('/** Fetches, validates, and mounts'));
+ const context=vm.createContext({session:null,$:()=>null,getAgentId:()=> 'shared_default',setChatConfigAgent:()=>{},request:async()=>{throw Error('signed out');}});
+ vm.runInContext(code,context);await context.loadAgentPrivacy();
+});
+test('unconfigured agent tools notice shows on the chat hint line even for private chats',async()=>{
+ const source=fs.readFileSync(path.join(__dirname,'panel.js'),'utf8');
+ const code=source.slice(source.indexOf('  let privacyMode=null;'),source.indexOf('/** Fetches, validates, and mounts'));
+ const notice={hidden:true,textContent:''},tools="No tools are available: this agent's capability levels aren't configured.";
+ const context=vm.createContext({session:null,$:()=>notice,getAgentId:()=> 'fixture_agent',setChatConfigAgent:()=>{},request:async()=>({conversation_privacy:'private',tools_notice:tools})});
+ vm.runInContext(code,context);await context.loadAgentPrivacy();
+ assert.equal(notice.hidden,false);assert.equal(notice.textContent,tools);
+ context.privacyNotice('private',null);assert.equal(notice.hidden,true);assert.equal(notice.textContent,'');
+});

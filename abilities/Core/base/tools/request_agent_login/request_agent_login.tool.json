@@ -1,0 +1,21 @@
+{
+  "name": "request_agent_login",
+  "description": "Begin device authorization for a caller-owned subscription connection through Models.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "maxLength": 128,
+        "type": "string"
+      }
+    },
+    "required": [
+      "connection_id"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval"
+  }
+}

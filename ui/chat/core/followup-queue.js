@@ -1,0 +1,84 @@
+// Projects durable queued-message state, including held-queue resume, beside transcript rows and commits revision-fenced user choices.
+// Durable delivery state is display-only until a revision-checked user action commits.
+/**
+ * Mount the session queued-message delivery controls beside its transcript.
+ * Inputs are panel-owned DOM, transport, session and access adapters; writes use the
+ * displayed queue revision plus a durable request key, then refresh from a snapshot.
+ * The generation fence prevents late reads/writes from repainting a newly selected session.
+ * Returns update/reset/paint, pending state, and destroy for the owning panel lifecycle.
+ */
+export function mountFollowupQueue({root,client,getSession,guard,note,keyId,forgetKey,onSnapshot,canWrite=()=>true}) {
+  let generation=0,revision=-1,entries=[],held=false,reason=null;
+  const busy=new Set();
+  // "Delivered" shows for 2s after a queued message joins the run, then hides; entries in
+  // the first snapshot after a load or session switch are history and show nothing.
+  let primed=false;
+  const hidden=new Set(),fading=new Set();
+  const terminal=new Set(['delivered','cancelled','rejected']);
+  // Translate durable queue states into short status text for transcript controls.
+  // Every message joins the conversation at the agent's next step; Send now forces that step.
+  const label=entry=>held&&['pending','held'].includes(entry.status)?'Held'+(reason?': '+reason:''):entry.status==='pending'&&entry.send_now?'Sending now…':entry.status==='pending'&&entry.waiting_for_compaction?'Waiting for compaction':({pending:'Sending — next step',reviewing:'Reviewing…',held:'Held — waiting to resume',delivered:'Delivered',cancelled:'Cancelled',rejected:'Not sent — rejected'})[entry.status]||entry.status;
+  // Create a text-only action button and pass its callback through the panel guard.
+  function makeButton(text,action){const b=document.createElement('button');b.type='button';b.textContent=text;b.onclick=guard(action);return b;}
+  // Reconcile visible delivery rows from the current queue while retaining focused controls.
+  function paint(){
+    for(const row of root.querySelectorAll('[data-public-id]')) {
+      // Nested bubble IDs serve anchoring; only the outer transcript row owns delivery controls.
+      if(row.parentElement?.closest('[data-public-id]'))continue;
+      const entry=entries.find(item=>item.message_id===row.dataset.publicId);
+      let box=row.querySelector('.followup-delivery');
+      if(entry?.status==='delivered'&&!fading.has(entry.id)&&!hidden.has(entry.id)){
+        if(primed){fading.add(entry.id);const epoch=generation;setTimeout(()=>{if(epoch!==generation)return;hidden.add(entry.id);paint();},2000);}
+        else hidden.add(entry.id);
+      }
+      if(!entry||hidden.has(entry.id)){box?.remove();continue;}
+      if(!box){box=document.createElement('div');box.className='followup-delivery';row.append(box);}
+      const paintKey=JSON.stringify([entry,held,reason]);
+      if(box.queuePaintKey===paintKey){for(const button of box.querySelectorAll('button'))button.disabled=!canWrite()||busy.has(entry.id);continue;}
+      const focused=box.contains(document.activeElement)?document.activeElement:null;
+      box.queuePaintKey=paintKey;box.replaceChildren();row.dataset.deliveryStatus=entry.status;
+      const status=document.createElement('p');status.className='followup-delivery-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.textContent=label(entry);box.append(status);
+      if(entry.reason){const reason=document.createElement('p');reason.textContent=entry.reason;box.append(reason);}
+      if(terminal.has(entry.status)){if(focused){status.tabIndex=-1;status.focus({preventScroll:true});}continue;}
+      const actions=document.createElement('div');actions.className='followup-delivery-actions';actions.setAttribute('aria-label','Message delivery');
+      // A held queue is resumed from its pending message; there is no separate banner.
+      // Send now sits left of Cancel while a ready message waits for the next step.
+      const now=!held&&entry.status==='pending'&&!entry.send_now;
+      const choices=[...(held?[['resume','Resume']]:[]),...(now?[['now','Send now']]:[]),['cancel','Cancel']];
+      for(const [choice,text] of choices){
+        const button=makeButton(text,choice==='resume'?resume:()=>change(entry,choice));button.dataset.deliveryChoice=choice;button.disabled=!canWrite()||busy.has(entry.id);actions.append(button);
+      }
+      box.append(actions);
+      if(focused){const replacement=[...actions.children].find(button=>button.dataset.deliveryChoice===focused.dataset.deliveryChoice&&!button.disabled);if(replacement)replacement.focus({preventScroll:true});else{status.tabIndex=-1;status.focus({preventScroll:true});}}
+    }
+  }
+  // Refresh the authoritative snapshot only if this session still owns the request.
+  async function refresh(sid,epoch){const data=await client.snapshot(sid);if(epoch!==generation||sid!==getSession())return;onSnapshot(data);}
+  // Commit one revision-checked delivery choice and reconcile errors from a fresh snapshot.
+  async function change(entry,choice){
+    if(!canWrite())throw Error("Message delivery controls are not available to this user");
+    if(busy.has(entry.id))return;
+    const sid=getSession(),epoch=generation,key='delivery:'+sid+':'+entry.id+':'+entry.revision+':'+choice;
+    busy.add(entry.id);paint();
+    try{await client.delivery(sid,entry.id,{expected_revision:entry.revision,client_request_id:keyId(key),choice});forgetKey(key);await refresh(sid,epoch);}
+    catch(error){if(epoch===generation&&sid===getSession()){note('Message delivery update failed: '+error.message);await refresh(sid,epoch);}throw error;}
+    finally{if(epoch===generation){busy.delete(entry.id);paint();}}
+  }
+  // Resume a held queue at the displayed revision, then reconcile from a fresh snapshot.
+  async function resume(){
+    if(!canWrite())throw Error('Queue resume is not available to this user');
+    const sid=getSession(),epoch=generation,key='resume-queue:'+sid+':'+revision;
+    try{await client.resumeQueue(sid,{client_request_id:keyId(key),expected_revision:revision});forgetKey(key);await refresh(sid,epoch);}
+    catch(error){if(epoch===generation&&sid===getSession())await refresh(sid,epoch);throw error;}
+  }
+  // Accept monotonic snapshots and repaint queue state.
+  function update(data){
+    const state=data.queue_state||{},next=Number(state.revision)||0;
+    if(next<revision)return;revision=next;entries=Array.isArray(data.queue)?data.queue:[];held=!!state.held;reason=state.reason||null;
+    paint();primed=true;
+  }
+  // Invalidate outstanding work and clear this session queue presentation.
+  function reset(){++generation;revision=-1;entries=[];held=false;reason=null;busy.clear();primed=false;hidden.clear();fading.clear();paint();}
+  // Dispose the mount after clearing state so no old queue UI remains in the panel.
+  return {update,reset,paint,/* True while any queued entry is not in a terminal state. */get pending(){return entries.some(e=>!terminal.has(e.status));},/* Reset state and remove this mount from the panel host. */destroy(){reset();}};
+}

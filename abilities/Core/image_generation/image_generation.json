@@ -1,0 +1,19 @@
+{
+  "display_name": "Image Generation",
+  "kind": "ability",
+  "description": "Generate an image from text using this agent’s assigned Image Out role and return a private authenticated attachment.",
+  "icon": "image",
+  "color": "#bb9af7",
+  "order": 6,
+  "placeholder": false,
+  "readiness": "ready",
+  "config": {
+    "required_model_role": "image_out",
+    "settings": []
+  },
+  "migration_note": "Native V3 implementation. Current schemas, live policy and configured model/module availability determine callable behavior.",
+  "owner_tier": [
+    "free",
+    "administrator"
+  ]
+}

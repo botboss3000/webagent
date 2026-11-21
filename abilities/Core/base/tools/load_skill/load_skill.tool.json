@@ -1,0 +1,51 @@
+{
+  "name": "load_skill",
+  "description": "Load a skill by ability_id, kind and skill_id from list_skills, or by tool_name for any tool in your tool list; returns the skill text.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ability_id": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9_]+$",
+        "type": "string"
+      },
+      "expected_catalog_version": {
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "ability",
+          "tool",
+          "selectable",
+          "own"
+        ],
+        "type": "string"
+      },
+      "skill_id": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9_]+$",
+        "type": "string"
+      },
+      "tool_name": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "^[a-z0-9_]+$",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "core": true,
+  "effect": "read",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

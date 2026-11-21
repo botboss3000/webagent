@@ -1,0 +1,302 @@
+/* V3 uses the v2 header and panel mounts with its own Rust API wiring. */
+/* SISTER-PANEL: floating-menu styles ported from ui/main-panel/admin-tools/files.css.
+   The body portal is shared by ability/skill/tool controls, even without File Manager. */
+body {
+  --files-bg-menu: var(--bg-1);
+  --files-border-strong: var(--border-strong);
+  --files-text: var(--fg-2);
+  --files-text-strong: var(--fg-1);
+  --files-link: var(--accent);
+  --files-menu-shadow: 0 6px 18px rgba(var(--shadow-rgb), 0.4);
+  --files-menu-item-hov: rgba(var(--brand-rgb), 0.45);
+  --files-danger: var(--danger);
+  --files-danger-hov: rgba(var(--danger-rgb), 0.25);
+}
+.files-tab-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--files-bg-menu);
+  border: var(--border-width) solid var(--files-border-strong);
+  border-radius: 6px;
+  box-shadow: var(--files-menu-shadow);
+  padding: 4px;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.files-tab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--files-text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.files-tab-menu-item:hover { background: var(--files-menu-item-hov); color: var(--files-text-strong); }
+.files-tab-menu-item.danger { color: var(--files-danger); }
+.files-tab-menu-item.danger:hover { background: var(--files-danger-hov); color: var(--files-text-strong); }
+.files-tab-menu-item.danger.armed { color: var(--warning); }
+.files-tab-menu-item.danger.armed:hover { background: rgba(var(--warning-rgb), 0.15); color: var(--warning); }
+.files-tab-menu-item .lucide-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.files-tab-menu-item.checked .files-tab-menu-check { margin-left: auto; color: var(--files-link); font-size: 12px; }
+.files-tab-menu-item .files-tab-menu-check { margin-left: auto; visibility: hidden; }
+.files-tab-menu-item.checked .files-tab-menu-check { visibility: visible; }
+.files-tab-menu-item:disabled { opacity: 0.4; cursor: default; }
+.files-tab-menu-item:disabled:hover { background: transparent; color: var(--files-text); }
+.files-tab-menu-sep { height: 1px; background: var(--files-border-strong); margin: 4px 6px; }
+.files-tab-menu-info { padding: 5px 10px 6px; min-width: 248px; font-size: 11px; line-height: 1.35; color: var(--files-text); opacity: 0.85; }
+
+/* Fixed policies expand in place; the tool menu stays within mobile viewports. */
+.files-tab-menu.ac-tool-policy-menu {
+  width: min(320px, calc(100vw - 16px));
+  min-width: 0;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+.ac-tool-policy-menu .files-tab-menu-info { min-width: 0; }
+.ac-tool-policies { padding: 6px 10px; color: var(--files-text); font-size: 12px; }
+.ac-tool-policies summary { cursor: pointer; color: var(--files-text-strong); }
+.ac-tool-policies summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ac-tool-policies p { margin: 8px 0 0; font-size: 11px; line-height: 1.4; }
+.ac-tool-policies p:last-child { color: var(--fg-3); }
+#tab-agents .agent-config-star{align-self:center;margin-right:18px;padding:0;border:0;background:transparent;color:var(--agent-config-icon);cursor:pointer}
+#tab-agents .agent-config-star:focus-visible{outline:2px solid var(--agent-config-icon);outline-offset:2px}
+@media(max-width:800px){#tab-agents .agent-config-star{margin-right:14px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg-0);color:var(--fg-1);font-family:var(--font-sans)}button,input,select,textarea{font:inherit}[hidden]{display:none!important}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+#notice{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10000;background:var(--bg-elev);color:var(--warning);border-radius:var(--r-md);max-width:90vw}#notice:not(:empty){padding:10px 16px;border:var(--border-width) solid var(--border)}
+#app{height:var(--app-height,100dvh);display:flex;flex-direction:column}
+#main-header{position:relative;display:flex;align-items:center;flex-shrink:0;min-height:56px;padding:0 14px}
+#main-tabs-wrap{display:block;position:relative;flex:1 1 auto;min-width:0}
+#main-tabs{display:flex;align-items:center;gap:4px}
+#header-refresh-browser{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:7px;border:0;border-radius:50%;background:transparent;color:var(--fg-2);cursor:pointer;flex:none}
+#header-refresh-browser:hover{background:rgba(var(--brand-rgb),.08);color:var(--fg-1)}
+#header-refresh-browser:active{background:rgba(var(--brand-rgb),.12);color:var(--accent)}
+#header-refresh-browser:disabled{opacity:.6;cursor:default}
+#top-user-id{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:7px;border:1px solid transparent;border-radius:50%;background:transparent;color:var(--fg-2)}
+#top-user-id[aria-expanded=true]{background:rgba(var(--brand-rgb),.12);color:var(--accent)}
+#status-right{margin-left:auto}
+#ptr-indicator{position:fixed;top:0;left:0;right:0;z-index:9999;display:flex;align-items:flex-end;justify-content:center;overflow:hidden;pointer-events:none;padding-bottom:6px;background:linear-gradient(180deg,var(--bg-elev,#0d0d1a),transparent);transition:opacity .12s ease}
+#ptr-indicator svg{display:block;width:44px;height:44px;filter:drop-shadow(0 0 8px rgba(70,212,255,.12))}
+#ptr-indicator.loading svg{animation:ptr-spin .6s linear infinite;transform-origin:center}
+@keyframes ptr-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#ptr-indicator.loading svg{animation:none}}
+.ptr-label-hint{position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);font-size:10px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;color:var(--fg-muted,#6b7397);opacity:0;transition:opacity .15s}
+.ptr-label-hint.show{opacity:.6}
+#mobile-nav-menu .mobile-nav-footer{border-top:var(--border-width) solid var(--border);padding:8px;flex-direction:row;align-items:center;justify-content:space-between;gap:8px}
+#mobile-nav-footer .theme-option{display:flex;align-items:center;justify-content:center;padding:6px 10px}
+#mobile-nav-footer .user-dropdown{align-self:center}
+/* Theme switch cross-fade (fadeAccountTheme in app.js). */
+::view-transition-old(root),::view-transition-new(root){animation-duration:.5s;animation-timing-function:ease-in-out}
+#mobile-back-main-btn{border:0;background:transparent}
+@media(max-width:800px){body.mobile-mode #mobile-nav-toggle,body.mobile-mode #mobile-back-main-btn{display:inline-flex!important}body.mobile-mode #main-tabs-wrap{display:none!important}}
+
+#chat-toggle-btn{border-radius:8px;padding:6px 12px}
+#chat-toggle-btn.connection-connecting span{color:var(--warning);animation:chat-connection-pulse 1.2s ease-in-out infinite}
+@keyframes chat-connection-pulse{50%{opacity:.4}}
+@media(prefers-reduced-motion:reduce){#chat-toggle-btn.connection-connecting span{animation:none}}
+/* Use the V2 account panel styles; the body portal escapes header clipping. */
+#user-dropdown-menu.user-dropdown-menu{width:min(360px,calc(100vw - 16px));min-width:0;max-height:calc(100dvh - 16px);overflow-y:auto;box-sizing:border-box}
+#user-dropdown-menu[hidden]{display:none!important}
+#user-dropdown-menu .v3-account-avatar{display:grid;place-items:center;flex:0 0 48px;width:48px;height:48px;border-radius:50%;background:var(--bg-tint);color:var(--fg-1)}
+#user-dropdown-menu .v3-account-avatar svg{width:28px;height:28px}
+#user-dropdown-menu button{font-family:inherit}
+#user-dropdown-menu .theme-option{display:flex;align-items:center;justify-content:center}
+#user-dropdown-menu .user-dropdown-action[hidden]{display:none}
+#user-dropdown-menu #shutoff{color:var(--danger)}
+#shutoff{color:var(--danger)}
+#stage{display:flex!important;flex:1;min-height:0;overflow:hidden}
+#main-panel{display:block!important;position:relative!important;flex:1 1 55%;width:auto!important;min-width:0;overflow:auto!important}
+#tab-agents{display:block!important;height:auto!important;min-height:100%;overflow:visible!important;padding:12px}
+#tab-agents[hidden]{display:none!important}
+#tab-account{min-height:100%;padding:24px 14px 48px}
+#tab-account .account-field input[readonly]{color:var(--fg-3);cursor:default}
+#tab-account .account-status{display:inline;color:var(--fg-2)}
+#tab-account .account-status.is-error, #tab-account .password-error{color:var(--danger)}
+#tab-account .password-error{font-size:12px;margin:6px 0 0}
+#tab-account .password-error[hidden]{display:none}
+#tab-account .account-session-help{color:var(--fg-3);font-size:13px;margin:0 0 12px}
+#tab-account .account-signin-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:var(--border-width) solid var(--border)}
+#tab-account .account-signin-details{min-width:0;display:flex;flex-direction:column;gap:3px}
+#tab-account .account-signin-details strong{color:var(--fg-1);font-size:13px;font-weight:600;overflow-wrap:anywhere}
+#tab-account .account-signin-details span{color:var(--fg-3);font-size:11px}
+#tab-account .account-signin-row button{flex-shrink:0}
+#tab-account #account-sessions:empty{min-height:20px}
+#tab-account form{max-width:100%}
+#chat-resize-handle{flex:0 0 14px;position:relative;cursor:col-resize;touch-action:none;-webkit-tap-highlight-color:transparent;z-index:10}
+#chat-resize-handle::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:36px;border-radius:2px;background:var(--border);pointer-events:none;transition:height .15s,background .15s}
+#chat-resize-handle::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(100px circle at 50% var(--resize-y,50%),color-mix(in srgb,var(--accent) 28%,transparent),transparent 65%);opacity:0;transition:opacity .15s}
+#chat-resize-handle:hover::before,#chat-resize-handle.resizing::before,#chat-resize-handle:focus-visible::before{height:56px;background:var(--accent)}
+#chat-resize-handle:hover::after,#chat-resize-handle.resizing::after,#chat-resize-handle:focus-visible::after{opacity:1}
+#chat-resize-handle:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+body.chat-resizing,body.chat-resizing *{cursor:col-resize!important;user-select:none!important}
+#stage:has(> #chat-resize-handle:not([hidden])) > #main-panel{flex:1 1 0}
+#stage > #chat-panel{flex:0 0 var(--chat-panel-width,45%)}
+@media(prefers-reduced-motion:reduce){#chat-resize-handle::before,#chat-resize-handle::after{transition:none}}
+#chat-panel{display:flex!important;position:relative!important;inset:auto!important;flex:1 1 45%;width:auto!important;min-width:0;min-height:0;flex-direction:column!important}
+#chat-panel[hidden],#chat-resize-handle[hidden]{display:none!important}
+#agents-grid{min-height:100%}
+#agents-grid .agents-top-row{display:flex;align-items:start;gap:12px}
+#agents-grid .agents-squares-wrap{flex:1}
+#agents-grid .agents-squares{display:flex;gap:10px}
+#agents-grid .agent-card{cursor:pointer}
+#agents-grid .agent-detail-panel{display:block}
+#agents-grid .agent-detail-content{min-height:0}
+#agents-grid .agent-card-tabs{display:flex;gap:7px}
+#agents-grid .agent-card-tabs [role=tab]{touch-action:pan-x;user-select:none;cursor:grab;white-space:nowrap;flex-shrink:0}
+#agents-grid .agent-card-tabs-chev{-webkit-tap-highlight-color:transparent}
+#agents-grid .agent-card-tabs [role=tab].dragging{cursor:grabbing;background:var(--accent-soft);outline:2px solid var(--accent)}
+#agents-grid .agent-card-tabs button{border:none;background:transparent;color:var(--fg-2);padding:8px 14px}
+#agents-grid .agent-card-tabs button[aria-selected=true]{color:var(--accent);border-bottom:2px solid var(--accent)}
+#model-page{padding:16px;max-width:940px}
+#model-page h2{font-size:20px;margin:0 0 18px}
+#model-page .ac-model-table{background:var(--bg-elev);border:var(--border-width) solid var(--border);border-radius:var(--r-md);padding:18px}
+#model-page .ac-model-table .ac-model-cfg-row{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:12px 0;border-bottom:var(--border-width) solid var(--border-soft)}
+#model-page .ac-model-table .ac-model-cfg-row:last-child{border-bottom:0}
+#model-page .ac-model-table .ac-ability-label{display:flex;flex-direction:column;gap:4px}
+#model-page .ac-model-table .ac-ability-name{font-weight:600}
+#model-page .ac-model-table .ac-ability-desc,#model-page .ac-model-table .ac-hint{font-size:13px;color:var(--fg-3)}
+#model-page .ac-model-table .ac-model-cfg-control{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#model-page .ac-model-table input{min-width:210px;background:var(--bg-1);color:var(--fg-1);border:var(--border-width) solid var(--border);border-radius:var(--r-sm);padding:8px}
+#model-page .ac-model-table button{background:var(--bg-1);color:var(--fg-1);border:var(--border-width) solid var(--border);border-radius:var(--r-sm);padding:8px 12px;cursor:pointer}
+#model-page .ac-model-table .ac-btn-primary{background:var(--accent);color:var(--bg-0)}
+#model-page a{color:var(--accent)}
+#device:empty{display:none}
+#rules label{display:flex;justify-content:space-between;gap:10px;margin:8px 0}
+#rules select{background:var(--bg-1);color:var(--fg-1)}
+@media(max-width:800px){#stage{flex-direction:column}#main-panel,#chat-panel{flex:1 1 auto;width:100%!important}#app[data-mobile-view="chat"] #main-panel,#app[data-mobile-view="main"] #chat-panel,#chat-resize-handle{display:none!important}#main-panel{overscroll-behavior-y:contain}#model-page .ac-model-table .ac-model-cfg-row{align-items:flex-start;flex-direction:column}#model-page .ac-model-table .ac-ability-label{flex:0 1 auto!important}#model-page .ac-model-table .ac-model-cfg-control{flex:0 1 auto!important;width:100%}#model-page .ac-model-table input{width:100%}}
+
+/* The desktop width basis becomes a height in the mobile column layout.
+   Match the desktop selector so chat fills the stage instead of stopping at 45%. */
+@media(max-width:800px){#stage > #chat-panel{flex:1 1 0}}
+
+/* V2 Abilities chart, Prompts group, and compact table use the shared Agents CSS.
+   These are only the v3 data adapter controls that v2's route-level search lacks. */
+#abilities-page{padding:5px;max-width:940px}
+#abilities-page .v3-abilities-page{max-width:750px;margin:0 auto}
+#abilities-page .v3-ability-search{display:block;width:100%;margin:16px 0;padding:9px 12px;border:var(--border-width) solid var(--border);border-radius:8px;background:var(--bg-elev);color:var(--fg-1)}
+#abilities-page .v3-ability-tools{overflow:visible}
+#abilities-page .v3-ability-note{margin:10px 8px;color:var(--fg-3);font-size:12px}
+#abilities-page .v3-ability-status{min-height:20px;color:var(--warning)}
+#abilities-page .v3-toggle-error{margin:2px 10px 6px;color:var(--danger);font-size:12px;text-align:right}
+/* Inset focus rings stay visible inside the clipped carousel.
+   Header menus escape it, so both roots own transparent native tap feedback.
+   Keep intentional pressed/selected backgrounds and existing theme/border tokens. */
+#main-header, #user-dropdown-menu { -webkit-tap-highlight-color: transparent; }
+#main-header button:focus-visible, #user-dropdown-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Keeps the body theme behind keyboard-driven app resizing; an opaque root mirrors the resolved body background on the document canvas. */
+/* Paint the browser backing surface explicitly; body owns the active theme.
+   boot.js mirrors its resolved color, including custom palettes. */
+html { background: var(--app-canvas-bg, var(--bg-0)) !important; }
+body { min-height: 100vh; min-height: 100lvh; }
+
+/* Paint the full screen, but keep the shell's controls clear of system bars
+   and landscape cutouts. Insets are zero when the browser owns those areas.
+   This is a layout invariant; installed display mode stays standalone. */
+/* The v3 shell owns spacing; shared desktop body gutters would overflow it. */
+body { padding: 0; }
+:root {
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+}
+#app {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: var(--app-safe-top) var(--app-safe-right) var(--app-safe-bottom) var(--app-safe-left);
+}
+/* The keyboard covers the home-indicator region on browsers retaining its inset. */
+body.kb-open #app { padding-bottom: 0; }
+/* app-settings ui.mobile_mode.full_height: mobile edge-to-edge. The shell drops its
+   safe-area padding so the chat transcript paints behind the system bars; the app
+   header overlays the transcript below the status bar while the chat header and
+   composer pad to the bars, so their measured transcript clearances follow. */
+@media (max-width:800px){
+  body.mobile-full-height #app{padding:0}
+  body.mobile-full-height #app:not([data-mobile-view="chat"]) #main-header{padding-top:var(--app-safe-top)}
+  body.mobile-full-height #app:not([data-mobile-view="chat"]) #main-panel{padding-bottom:var(--app-safe-bottom)}
+  body.mobile-full-height #ptr-indicator{padding-top:var(--app-safe-top)}
+  body.mobile-full-height #app[data-mobile-view="chat"] #main-header{position:absolute;top:var(--app-safe-top);left:0;right:0;z-index:3;background:transparent}
+  /* 56px mirrors #main-header's min-height; the chat header's measured clearance follows this padding. */
+  body.mobile-full-height #app[data-mobile-view="chat"] #chat-header{padding-top:calc(var(--app-safe-top) + 56px)}
+  body.mobile-full-height #chat-input-area{padding-bottom:var(--app-safe-bottom)}
+}
+#notice { top: calc(12px + var(--app-safe-top)); max-width: calc(90vw - var(--app-safe-left) - var(--app-safe-right)); }
+body #app-restricted-overlay {
+  padding-top: max(clamp(24px, 6vw, 72px), var(--app-safe-top));
+  padding-right: max(20px, var(--app-safe-right));
+  padding-bottom: max(clamp(24px, 6vw, 72px), var(--app-safe-bottom));
+  padding-left: max(20px, var(--app-safe-left));
+}
+/* Shared desktop scrollbar: a persistent 6px rounded thumb on a transparent
+   track in every browser. Chromium/Safari draw it from the layer below; desktop
+   Firefox draws the same thumb (.wa-scrollbar) from /ui/shared/scrollbars/scrollbars.js.
+   Layered !important outranks every unlayered !important, so page-specific
+   widths and colours yield. Bars hidden with scrollbar-width:none stay hidden,
+   and touch devices keep their native bars. */
+body {
+  --wa-scrollbar-size: 6px;
+  --wa-scrollbar-thumb: rgba(var(--brand-rgb), 0.35);
+  --wa-scrollbar-thumb-hover: rgba(var(--brand-rgb), 0.55);
+}
+@layer wa-scrollbar {
+  @media (hover: hover) and (pointer: fine) {
+    *::-webkit-scrollbar { width: var(--wa-scrollbar-size) !important; height: var(--wa-scrollbar-size) !important; background: transparent !important; }
+    *::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+    *::-webkit-scrollbar-thumb { background: var(--wa-scrollbar-thumb) !important; border: 0 !important; border-radius: calc(var(--wa-scrollbar-size) / 2) !important; }
+    *::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:active { background: var(--wa-scrollbar-thumb-hover) !important; }
+  }
+}
+.wa-scrollbar {
+  position: absolute !important; top: 0 !important; left: 0 !important; z-index: 5; margin: 0 !important; padding: 0 !important;
+  box-sizing: border-box; width: var(--wa-scrollbar-size); height: var(--wa-scrollbar-size);
+  border-radius: calc(var(--wa-scrollbar-size) / 2); background: var(--wa-scrollbar-thumb);
+  pointer-events: auto; touch-action: none; will-change: transform;
+}
+.wa-scrollbar:hover, .wa-scrollbar.dragging { background: var(--wa-scrollbar-thumb-hover); }
+.wa-scrollbar[hidden] { display: none !important; }
+/* Scroll gutter inside the padding. Put .wa-scroll-gutter on a scroller and set
+   --wa-scroll-pad to the right padding you want (default 12px; set it instead of
+   padding-right). Where the 6px desktop bar takes layout width (Chromium/Safari, fine
+   pointer) its space is always reserved and taken out of that padding, so content keeps
+   its place when the bar appears and the right edge stays --wa-scroll-pad wide. Firefox
+   and touch bars overlay the padding, which then stays whole. */
+.wa-scroll-gutter.wa-scroll-gutter { padding-right: var(--wa-scroll-pad, 12px); }
+@supports selector(::-webkit-scrollbar) {
+  @media (hover: hover) and (pointer: fine) {
+    .wa-scroll-gutter.wa-scroll-gutter { scrollbar-gutter: stable; padding-right: max(0px, calc(var(--wa-scroll-pad, 12px) - var(--wa-scrollbar-size))); }
+  }
+}
+/* Firefox scrollers the component leaves native (text editors, touch): full
+   width instead of design-system.css's scrollbar-width:thin hairline. */
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: auto; scrollbar-color: rgba(var(--brand-rgb), 0.38) transparent; }
+  body.light-mode * { scrollbar-color: rgba(var(--brand-rgb), 0.45) transparent; }
+}
+/* Administrator rebuild-needed popup (shell/ability-drift/ability-drift.js): top left on every page. */
+#ability-drift{position:fixed;top:12px;left:12px;z-index:9999;width:min(420px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:var(--bg-elev);border:var(--border-width) solid var(--warning);border-radius:var(--r-md);padding:12px 14px;box-shadow:0 8px 24px rgba(var(--shadow-rgb),.25)}
+#ability-drift h2{margin:0 0 4px;font-size:1rem;color:var(--warning)}
+#ability-drift p{margin:0 0 8px}
+#ability-drift ul{margin:0 0 10px;padding-left:18px}
+#ability-drift li{margin:4px 0;overflow-wrap:anywhere}
+#ability-drift li div{opacity:.8;font-size:.9em}
+#ability-drift .ability-drift-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#ability-drift button{-webkit-tap-highlight-color:transparent;border:var(--border-width) solid var(--border);border-radius:var(--r-sm);background:transparent;color:inherit;padding:6px 14px;font:inherit;cursor:pointer}
+#ability-drift button:hover,#ability-drift button:focus-visible{border-color:var(--accent)}
+#ability-drift button:active{border-color:var(--accent);background:rgba(var(--brand-rgb),.12)}
+#ability-drift .ability-drift-confirm{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:10px;padding-top:10px;border-top:var(--border-width) solid var(--border)}
+#ability-drift .ability-drift-confirm p{grid-column:1/-1;margin:0}
+#ability-drift .ability-drift-confirm small{opacity:.8}
+#ability-drift .ability-drift-status{margin:10px 0 0}

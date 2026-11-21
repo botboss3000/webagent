@@ -1,0 +1,43 @@
+{
+  "name": "offer_choices",
+  "description": "Show the visitor up to 8 reply buttons; a click sends that label as their next message.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "options": {
+        "items": {
+          "maxLength": 80,
+          "type": "string"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      },
+      "prompt": {
+        "maxLength": 200,
+        "type": "string"
+      }
+    },
+    "required": [
+      "prompt",
+      "options"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "show reply buttons with time slots",
+      "give the visitor options to click"
+    ],
+    "keywords": [
+      "buttons",
+      "choices"
+    ]
+  }
+}

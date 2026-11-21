@@ -1,0 +1,26 @@
+{
+  "name": "background_calls_read",
+  "description": "Read the status of a caller-owned background call.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "call_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "call_id"
+    ],
+    "additionalProperties": false
+  },
+  "core": true,
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

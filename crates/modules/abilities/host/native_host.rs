@@ -1,0 +1,699 @@
+//! Root composition of the native tools crate (`webagent-native-tools`): the
+//! [`NativeHost`] its handlers call back into for run authority, session identity,
+//! uploads and media lanes.
+use crate::{api, shared_chat, tools, App};
+use anyhow::{anyhow, Result};
+use serde_json::Value;
+use tokio_util::sync::CancellationToken;
+use webagent_access::{authority::LiveAccess, Relationship, ToolDecision};
+use webagent_assets_contracts as assets;
+use webagent_context_contracts::context_compaction::Config as CompactionConfig;
+use webagent_files::uploads::AttachmentLimits;
+use webagent_host_core::StoreCore;
+use webagent_models::account_catalog::PlatformPin;
+use webagent_models::model_selection::{Catalog, ModelRole, SelectionPlan};
+use webagent_native_tools::{Call, NativeHost, Pending};
+
+pub(crate) struct Host<'a>(pub(crate) &'a App);
+
+impl NativeHost for Host<'_> {
+    fn store(&self) -> &StoreCore {
+        &self.0.store
+    }
+    fn agent_store<'a>(&'a self, agent: &'a str) -> Pending<'a, Result<StoreCore>> {
+        Box::pin(async move { Ok((*self.0.store.for_agent(agent).await?).clone()) })
+    }
+    fn user_store<'a>(&'a self, user: &'a str) -> Pending<'a, Result<StoreCore>> {
+        Box::pin(async move { Ok((*self.0.store.for_user(user).await?).clone()) })
+    }
+    fn gate(&self) -> &tokio::sync::Mutex<()> {
+        &self.0.gate
+    }
+    fn actor(&self) -> &str {
+        shared_chat::actor(self.0)
+    }
+    fn authorize<'a>(
+        &'a self,
+        call: Call<'a>,
+        name: &'a str,
+        args: &'a Value,
+        cancel: &'a CancellationToken,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            tools::core_authority::check(
+                self.0,
+                call.sid,
+                call.run_id,
+                call.generation,
+                call.pending_id,
+                name,
+                args,
+                cancel,
+            )
+            .await
+        })
+    }
+    fn relationship<'a>(
+        &'a self,
+        sid: &'a str,
+        agent: &'a str,
+    ) -> Pending<'a, Result<Relationship>> {
+        Box::pin(async move {
+            let actor = shared_chat::actor(self.0);
+            Ok(shared_chat::live_access(&self.0.store, actor, sid, agent)
+                .await?
+                .relationship)
+        })
+    }
+    fn worker<'a>(
+        &'a self,
+        name: &'a str,
+        args: &'a Value,
+        sid: &'a str,
+        run: &'a Value,
+        cancel: CancellationToken,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            // Directory decisions read the live checkout only when Codebase Admin supplies
+            // file_list to this run. Sandbox calls carry the ability's limits and the
+            // storage owner's remaining room, and element syncs their marker, which only the
+            // root may set.
+            let trusted = if name == "decision_candidates" {
+                tools::administrator::checkout_grant(self.0, sid, run, "file_list", None).await
+            } else if name == webagent_native_tools::sandbox::ELEMENT_SYNC {
+                Some(serde_json::json!({"element_sync":true}))
+            } else if webagent_native_tools::sandbox::limited(name) {
+                let mut limits = webagent_native_tools::sandbox::limits()?;
+                limits["room_bytes"] = serde_json::json!(api::uploads::storage_room(self.0)
+                    .await
+                    .map_err(|e| anyhow!(e.1))?);
+                Some(serde_json::json!({"sandbox":limits}))
+            } else {
+                None
+            };
+            tools::execute_trusted(name, args, sid, &self.0.tool_socket, trusted, cancel).await
+        })
+    }
+    fn write_artifact<'a>(
+        &'a self,
+        call: Call<'a>,
+        kind: &'a str,
+        id: &'a str,
+        expected_revision: u64,
+        artifact: &'a Value,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(self.0.store.base_write_artifact(
+            call.sid,
+            call.run_id,
+            call.pending_id,
+            call.generation,
+            kind,
+            id,
+            expected_revision,
+            artifact,
+        ))
+    }
+    fn main_notes_state<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(crate::main_chat::tool_state(self.0, sid))
+    }
+    fn main_notes_contribute<'a>(
+        &'a self,
+        sid: &'a str,
+        expected: u64,
+        request: &'a str,
+        fingerprint: &'a str,
+        contribution: webagent_chat::main_chat::Contribution,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(crate::main_chat::tool_contribute(
+            self.0,
+            sid,
+            expected,
+            request,
+            fingerprint,
+            contribution,
+        ))
+    }
+    fn session_artifact<'a>(
+        &'a self,
+        sid: &'a str,
+        id: &'a str,
+    ) -> Pending<'a, Result<Option<Value>>> {
+        Box::pin(async move {
+            Ok(self
+                .0
+                .store
+                .session_artifacts(sid)
+                .await?
+                .into_iter()
+                .find(|artifact| artifact["id"] == id))
+        })
+    }
+    fn write_session_artifact<'a>(
+        &'a self,
+        call: Call<'a>,
+        kind: &'a str,
+        id: &'a str,
+        body: &'a Value,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(self.0.store.session_artifact_write(
+            call.sid,
+            call.run_id,
+            call.pending_id,
+            call.generation,
+            kind,
+            id,
+            body,
+        ))
+    }
+    fn attachment_limits<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<AttachmentLimits>> {
+        Box::pin(async move {
+            api::uploads::limits(self.0, sid)
+                .await
+                .map_err(|e| anyhow!(e.1))
+        })
+    }
+    fn upload<'a>(&'a self, sid: &'a str, body: Value) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            let upload = api::uploads::upload(
+                crate::State(self.0.clone()),
+                axum::extract::Path(sid.to_owned()),
+                crate::Json(body),
+            )
+            .await
+            .map_err(|e| anyhow!(e.1))?;
+            Ok(upload.0)
+        })
+    }
+    fn attachment<'a>(&'a self, sid: &'a str, id: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            let record = api::uploads::lookup(self.0, sid, id)
+                .await
+                .map_err(|e| anyhow!(e.1))?;
+            self.0.store.attachment_with_data(record).await
+        })
+    }
+    fn attachment_in_tree<'a>(&'a self, sid: &'a str, id: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            let record = api::uploads::lookup_in_tree(self.0, sid, id)
+                .await
+                .map_err(|e| anyhow!(e.1))?;
+            self.0.store.attachment_with_data(record).await
+        })
+    }
+    fn media_lane<'a>(&'a self, sid: &'a str, role: ModelRole) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            api::media_lane::lane_run(self.0, sid, role)
+                .await
+                .map_err(|e| anyhow!(e.1))
+        })
+    }
+    fn media_answer<'a>(
+        &'a self,
+        lane: &'a Value,
+        input: Vec<Value>,
+        instructions: &'a str,
+    ) -> Pending<'a, Result<String>> {
+        Box::pin(async move {
+            api::media_lane::lane_answer(self.0, lane, input, instructions)
+                .await
+                .map_err(|e| anyhow!(e.1))
+        })
+    }
+    fn session_agent_id<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<String>> {
+        Box::pin(crate::session_agent_id(self.0, sid))
+    }
+    fn live_access<'a>(&'a self, user: &'a str, agent: &'a str) -> Pending<'a, Result<LiveAccess>> {
+        Box::pin(self.0.store.live_access(user, agent))
+    }
+    fn model_catalog(&self) -> Pending<'_, Result<Catalog>> {
+        Box::pin(self.0.store.model_catalog())
+    }
+    fn pin_model_plan<'a>(&'a self, plan: &'a mut SelectionPlan) -> Pending<'a, Result<()>> {
+        Box::pin(self.0.pin_model_plan(plan))
+    }
+    fn dispatch_tokens<'a>(
+        &'a self,
+        user: &'a str,
+        agent: &'a str,
+        pin: &'a PlatformPin,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(self.0.store.platform_dispatch_tokens(user, agent, pin))
+    }
+    fn dependency<'a>(
+        &'a self,
+        sid: &'a str,
+        run: &'a Value,
+        tool: &'a str,
+    ) -> Pending<'a, Result<()>> {
+        Box::pin(tools::core_authority::dependency(self.0, sid, run, tool))
+    }
+    fn agent_request<'a>(
+        &'a self,
+        method: &'a str,
+        path: String,
+        body: Value,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(tools::core_agent_management::request(
+            self.0, method, path, body,
+        ))
+    }
+    fn shared_chat_policy<'a>(
+        &'a self,
+        agent: &'a str,
+    ) -> Pending<'a, Result<shared_chat::SharedChatPolicy>> {
+        Box::pin(shared_chat::policy(&self.0.store, agent))
+    }
+    fn prompt_slot<'a>(
+        &'a self,
+        user: &'a str,
+        agent: &'a str,
+        slot: &'a str,
+    ) -> Pending<'a, Result<Option<Value>>> {
+        Box::pin(async move {
+            self.0
+                .store
+                .for_user(user)
+                .await?
+                .for_agent(agent)
+                .await?
+                .get_prompt_slot(slot)
+                .await
+        })
+    }
+    fn module_tool_call<'a>(
+        &'a self,
+        sid: &'a str,
+        run_id: &'a str,
+        tool: &'a str,
+        args: &'a Value,
+        pending_id: &'a str,
+        cancel: CancellationToken,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(crate::modules::tool_call(
+            self.0, sid, run_id, tool, args, pending_id, cancel,
+        ))
+    }
+    fn session_access<'a>(
+        &'a self,
+        sid: &'a str,
+        agent: &'a str,
+    ) -> Pending<'a, Result<LiveAccess>> {
+        Box::pin(shared_chat::live_access(
+            &self.0.store,
+            shared_chat::actor(self.0),
+            sid,
+            agent,
+        ))
+    }
+    fn ability_controls<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<(u64, Value, Value)>> {
+        Box::pin(crate::ability_controls(self.0, sid))
+    }
+    fn discovery_controls<'a>(
+        &'a self,
+        sid: &'a str,
+        agent: &'a str,
+    ) -> Pending<'a, Result<(u64, Value, Value)>> {
+        Box::pin(async move {
+            let (revision, mut visibility, state) = crate::ability_controls(self.0, sid).await?;
+            self.0
+                .engine()
+                .hide_without_model_role(agent, &mut visibility, &state)
+                .await?;
+            Ok((revision, visibility, state))
+        })
+    }
+    fn session_mode<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(crate::session_mode(self.0, sid))
+    }
+    fn live_tool_decision(
+        &self,
+        access: &LiveAccess,
+        name: &str,
+        visibility: &Value,
+        state: &Value,
+        loaded: &Value,
+    ) -> ToolDecision {
+        crate::live_tool_decision(self.0, access, name, visibility, state, loaded)
+    }
+    fn default_agent_model(&self) -> &'static str {
+        crate::DEFAULT_AGENT_MODEL
+    }
+    fn active_runs(&self) -> Pending<'_, Result<Vec<Value>>> {
+        Box::pin(self.0.store.active_runs())
+    }
+    fn followup_queue<'a>(&'a self, sid: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(self.0.store.followup_queue(sid))
+    }
+    fn terminal(&self, status: &str) -> bool {
+        webagent_engine::runtime::failure::terminal(status)
+    }
+    fn selected_state(&self, visibility: &Value, state: &Value, loaded: &Value) -> Value {
+        self.0.abilities.selected_state(visibility, state, loaded)
+    }
+    fn catalog_with(&self, visibility: &Value, state: &Value) -> Vec<Value> {
+        self.0.abilities.catalog_with(visibility, state)
+    }
+    fn all_schemas(&self) -> Vec<Value> {
+        self.0.abilities.all_schemas()
+    }
+    fn tool_gate(
+        &self,
+        name: &str,
+        visibility: &Value,
+        state: &Value,
+        loaded: &Value,
+    ) -> (bool, bool) {
+        self.0.abilities.tool_gate(name, visibility, state, loaded)
+    }
+    fn change_session_mode<'a>(
+        &'a self,
+        agent: &'a str,
+        call: Call<'a>,
+        mode: &'a str,
+        expected_revision: u64,
+    ) -> Pending<'a, Result<Result<Value>>> {
+        Box::pin(async move {
+            let mut scoped = self.0.clone();
+            scoped.store = self.0.store.for_agent(agent).await?;
+            let tool = api::ModeCall {
+                run_id: call.run_id,
+                generation: call.generation,
+                pending_id: call.pending_id,
+            };
+            Ok(api::change_session_mode(
+                &scoped,
+                call.sid,
+                mode,
+                Some(expected_revision),
+                Some(tool),
+            )
+            .await
+            .map(|response| response.0)
+            .map_err(|e| anyhow!(e.1)))
+        })
+    }
+    fn rating_asset<'a>(
+        &'a self,
+        sid: &'a str,
+        run_id: &'a str,
+        args: &'a Value,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(tools::core_skills::rating_asset(self.0, sid, run_id, args))
+    }
+    fn scoped_session_agent_id<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+    ) -> Pending<'a, Result<String>> {
+        Box::pin(async move { crate::session_agent_id(&on(self.0, store), sid).await })
+    }
+    fn scoped_ability_controls<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+    ) -> Pending<'a, Result<(u64, Value, Value)>> {
+        Box::pin(async move { crate::ability_controls(&on(self.0, store), sid).await })
+    }
+    fn scoped_session_mode<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move { crate::session_mode(&on(self.0, store), sid).await })
+    }
+    fn scoped_live_access<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        user: &'a str,
+        sid: &'a str,
+        agent: &'a str,
+    ) -> Pending<'a, Result<LiveAccess>> {
+        Box::pin(async move {
+            shared_chat::live_access(&on(self.0, store).store, user, sid, agent).await
+        })
+    }
+    fn abilities_version(&self) -> String {
+        self.0.abilities.live_version()
+    }
+    fn tool_result_origin<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        call_id: &'a str,
+    ) -> Pending<'a, Result<Option<(String, Value)>>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .tool_result_origin(sid, call_id)
+                .await
+        })
+    }
+    fn tool_result<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        rid: &'a str,
+        call_id: &'a str,
+    ) -> Pending<'a, Result<Option<Value>>> {
+        Box::pin(async move { on(self.0, store).store.tool_result(sid, rid, call_id).await })
+    }
+    fn tool_call_name<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        rid: &'a str,
+        call_id: &'a str,
+    ) -> Pending<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .tool_call_name(sid, rid, call_id)
+                .await
+        })
+    }
+    fn model_chat_page<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        after: i64,
+        limit: i64,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .model_chat_page(sid, after, limit)
+                .await
+        })
+    }
+    fn search_private_sessions<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        query: &'a str,
+        status: &'a str,
+        limit: usize,
+        continuation: Option<&'a str>,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .search_private_sessions(query, status, limit, continuation)
+                .await
+        })
+    }
+    fn model_search_hit_allowed<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        hit: &'a Value,
+    ) -> Pending<'a, Result<bool>> {
+        Box::pin(async move { on(self.0, store).store.model_search_hit_allowed(hit).await })
+    }
+    fn session_summary<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move { on(self.0, store).store.session_summary(sid).await })
+    }
+    fn model_message_allowed<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        rid: &'a str,
+    ) -> Pending<'a, Result<bool>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .model_message_allowed(sid, rid)
+                .await
+        })
+    }
+    fn prompt_slots<'a>(&'a self, store: &'a StoreCore) -> Pending<'a, Result<Vec<Value>>> {
+        Box::pin(async move { on(self.0, store).store.list_prompt_slots().await })
+    }
+    fn self_edit_prompt_slot<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        slot: &'a str,
+        content: &'a str,
+        mode: &'a str,
+        expected_revision: i64,
+        pending: &'a str,
+        scope: &'a str,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .self_edit_prompt_slot(slot, content, mode, expected_revision, pending, scope)
+                .await
+        })
+    }
+    fn mutate_own_skill<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        name: &'a str,
+        description: Option<&'a str>,
+        instructions: Option<&'a str>,
+        mode: Option<&'a str>,
+        expected_revision: i64,
+        remove: bool,
+        pending: &'a str,
+        scope: &'a str,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .mutate_own_skill(
+                    name,
+                    description,
+                    instructions,
+                    mode,
+                    expected_revision,
+                    remove,
+                    pending,
+                    scope,
+                )
+                .await
+        })
+    }
+    fn shared_chat_owner<'a>(&'a self, sid: &'a str, user: &'a str) -> Pending<'a, Result<String>> {
+        Box::pin(async move { Ok(shared_chat::resolve(self.0, sid, user).await?.owner_id) })
+    }
+    fn shared_help_request<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        actor: &'a str,
+        request: &'a str,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .shared_help_request(sid, actor, request)
+                .await
+        })
+    }
+    fn chat_components<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+    ) -> Pending<'a, Result<Vec<Value>>> {
+        Box::pin(async move { on(self.0, store).store.base_chat_components(sid).await })
+    }
+    fn compaction_config(&self) -> Result<CompactionConfig> {
+        crate::context_compaction::Config::read(&self.0.compaction_config_path)
+            .map(|config| config.0)
+    }
+    fn action_statuses<'a>(&'a self, run: &'a Value) -> Pending<'a, Result<Vec<Value>>> {
+        Box::pin(crate::actions::statuses(self.0, run))
+    }
+    fn action_lookup<'a>(&'a self, run: &'a Value, id: &'a str) -> Pending<'a, Result<Value>> {
+        Box::pin(crate::actions::lookup(self.0, run, id))
+    }
+    fn task_list<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        rid: &'a str,
+        revision: Option<u64>,
+    ) -> Pending<'a, Result<Option<Value>>> {
+        Box::pin(async move { on(self.0, store).store.task_list(sid, rid, revision).await })
+    }
+    fn write_task_list<'a>(
+        &'a self,
+        call: Call<'a>,
+        receipt: &'a str,
+        expected_revision: u64,
+        list: &'a Value,
+        changes: &'a Value,
+        marks: &'a Value,
+    ) -> Pending<'a, Result<Value>> {
+        Box::pin(self.0.store.task_list_write(
+            call.sid,
+            call.run_id,
+            call.pending_id,
+            call.generation,
+            receipt,
+            expected_revision,
+            list,
+            changes,
+            marks,
+        ))
+    }
+    fn context_assets<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        agent: &'a str,
+        requester: &'a str,
+    ) -> Pending<'a, Result<assets::State>> {
+        Box::pin(async move {
+            on(self.0, store)
+                .store
+                .context_assets(sid, agent, requester)
+                .await
+        })
+    }
+    fn context_fingerprint<'a>(
+        &'a self,
+        store: &'a StoreCore,
+        sid: &'a str,
+        agent: &'a str,
+        loaded: &'a Value,
+        selected: &'a Value,
+        skills: &'a Value,
+        optimization: &'a Value,
+        requester: &'a str,
+    ) -> Pending<'a, Result<String>> {
+        Box::pin(async move {
+            crate::context_assets::fingerprint(
+                &on(self.0, store),
+                sid,
+                agent,
+                loaded,
+                selected,
+                skills,
+                optimization,
+                requester,
+            )
+            .await
+        })
+    }
+    fn assets_plan<'a>(
+        &'a self,
+        request: &'a assets::Request,
+        cancel: &'a CancellationToken,
+    ) -> Pending<'a, Result<assets::Plan>> {
+        Box::pin(crate::engine_components::assets_plan(
+            &self.0.store.root,
+            request,
+            cancel,
+        ))
+    }
+}
+
+/// `app` reading through agent or user store `store`'s planes, as a scoped view of it would.
+fn on(app: &App, store: &StoreCore) -> App {
+    let mut scoped = app.clone();
+    *scoped.store = store.clone();
+    scoped
+}

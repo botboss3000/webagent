@@ -1,0 +1,12 @@
+{
+  "max_element_kb": 256,
+  "max_elements": 50,
+  "max_shared": 20,
+  "max_params_kb": 4,
+  "prompt_countdown_seconds": 3,
+  "routes": [
+    "/app?tab=agents",
+    "/app?tab=settings",
+    "/app?tab=files"
+  ]
+}

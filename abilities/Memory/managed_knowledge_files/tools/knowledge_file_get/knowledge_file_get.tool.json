@@ -1,0 +1,34 @@
+{
+  "name": "knowledge_file_get",
+  "description": "Read one knowledge file's full text by ID.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file_id": {
+        "maxLength": 64,
+        "type": "string"
+      }
+    },
+    "required": [
+      "file_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "read a knowledge file"
+    ],
+    "keywords": [
+      "knowledge file"
+    ]
+  }
+}

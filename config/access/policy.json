@@ -1,0 +1,127 @@
+{
+  "login_protection": {
+    "account": {
+      "delay_seconds": 5,
+      "failures": 5,
+      "max_delay_seconds": 60,
+      "window_seconds": 300
+    },
+    "address": {
+      "block_seconds": 60,
+      "failures": 5,
+      "max_block_seconds": 3600,
+      "window_seconds": 300
+    }
+  },
+  "pages": {
+    "app": {
+      "config": "admin",
+      "files": "admin"
+    },
+    "main": {
+      "app": "admin",
+      "host-admin": "admin"
+    }
+  },
+  "registration": "open",
+  "request_limits": {
+    "new_accounts_per_day": 50,
+    "pairing_failures_per_minute": 20,
+    "per_address_per_minute": {
+      "api": 600,
+      "guest": 30,
+      "login": 120,
+      "pairing": 10,
+      "password_change": 5,
+      "registration": 10
+    },
+    "per_user_per_minute": {
+      "chat_send": 20,
+      "messaging_api": 60,
+      "upload": 30
+    }
+  },
+  "revision": 59,
+  "storage": {
+    "compress_idle_days": 7,
+    "compression": {
+      "algorithm": "zstd",
+      "idle_level": 19,
+      "level": 3,
+      "min_bytes": 256,
+      "mode": "on_save",
+      "skip_media_types": [
+        "image/*",
+        "video/*",
+        "audio/*",
+        "application/zip",
+        "application/gzip",
+        "application/x-7z-compressed",
+        "application/x-rar-compressed",
+        "application/zstd"
+      ]
+    },
+    "critical_percent": 90,
+    "tiers": {
+      "administrator": {
+        "agent_storage_mb": 50,
+        "max_published_agents": null,
+        "user_storage_mb": 500
+      },
+      "anonymous": {
+        "agent_storage_mb": 0,
+        "max_published_agents": 0,
+        "user_storage_mb": 10
+      },
+      "free": {
+        "agent_storage_mb": 50,
+        "max_published_agents": 5,
+        "user_storage_mb": 100
+      }
+    },
+    "trim_idle_days": 7,
+    "warning_percent": 80
+  },
+  "tier_names": {
+    "administrator": "Administrator",
+    "anonymous": "Anonymous",
+    "free": "Free"
+  },
+  "tier_order": [
+    "administrator",
+    "free",
+    "anonymous"
+  ],
+  "tiers": {
+    "administrator": {
+      "allowed_models": [
+        "*"
+      ],
+      "id": "administrator",
+      "max_active_runs": 200,
+      "max_sessions": 10000,
+      "model_policy": null,
+      "revision": 17
+    },
+    "anonymous": {
+      "allowed_models": [
+        "deepseek-flash"
+      ],
+      "id": "anonymous",
+      "max_active_runs": 2,
+      "max_sessions": 10,
+      "model_policy": null,
+      "revision": 6
+    },
+    "free": {
+      "allowed_models": [
+        "deepseek-flash"
+      ],
+      "id": "free",
+      "max_active_runs": 2,
+      "max_sessions": 10,
+      "model_policy": null,
+      "revision": 6
+    }
+  }
+}

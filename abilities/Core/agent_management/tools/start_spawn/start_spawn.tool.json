@@ -1,0 +1,44 @@
+{
+  "name": "start_spawn",
+  "description": "Start a sub agent: a child session shown as a tab that reports its final reply.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536
+      },
+      "agent_id": {
+        "type": "string",
+        "maxLength": 128
+      },
+      "title": {
+        "type": "string",
+        "maxLength": 200
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "start a sub agent for this task",
+      "run tasks in parallel",
+      "spawn a helper"
+    ],
+    "keywords": [
+      "sub agent",
+      "spawn",
+      "parallel"
+    ]
+  }
+}

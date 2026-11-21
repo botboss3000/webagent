@@ -1,0 +1,46 @@
+{
+  "name": "message_session",
+  "description": "Send an attributed message to a session in scope; returns admission, not the reply.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "session_id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 65536
+      },
+      "delivery": {
+        "type": "string",
+        "enum": [
+          "steer",
+          "now"
+        ]
+      }
+    },
+    "required": [
+      "session_id",
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "send a message to another session",
+      "steer the running sub agent"
+    ],
+    "keywords": [
+      "message session",
+      "steer"
+    ]
+  }
+}

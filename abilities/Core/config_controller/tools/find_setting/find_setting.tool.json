@@ -1,0 +1,55 @@
+{
+  "name": "find_setting",
+  "description": "Find which setting a plain-language request means on a user, agent or app layer; changes nothing.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "request": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500,
+        "description": "The user's request in their own words."
+      },
+      "layer": {
+        "enum": [
+          "user",
+          "agent",
+          "app"
+        ],
+        "description": "user: the caller's own settings; agent: this conversation's agent or `agent`; app: the whole app (administrators)."
+      },
+      "agent": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Agent id for the agent layer; omit for this conversation's agent."
+      }
+    },
+    "required": [
+      "request",
+      "layer"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which setting controls this",
+      "find the setting for dark mode",
+      "change a configuration value"
+    ],
+    "keywords": [
+      "setting",
+      "configure",
+      "preference"
+    ]
+  }
+}

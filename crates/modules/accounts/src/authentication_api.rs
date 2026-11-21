@@ -1,0 +1,246 @@
+//! Password sign-in and setup controllers; the host supplies live Access admission and composition.
+use super::self_service::required;
+use crate::{
+    api::{Api, Error, Host},
+    LoginAttempts, RecordCodec, Repository,
+};
+use axum::{
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+fn bad(message: &str) -> Error {
+    Error::Public(StatusCode::BAD_REQUEST, message.into())
+}
+fn unauthorized() -> Error {
+    Error::Public(StatusCode::UNAUTHORIZED, "Invalid login".into())
+}
+pub(crate) fn origin(headers: &HeaderMap, secure: bool) -> Result<(), Error> {
+    if !crate::valid_origin(
+        headers.get("origin").and_then(|v| v.to_str().ok()),
+        headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(""),
+        secure,
+    ) {
+        return Err(bad("Invalid request origin"));
+    }
+    Ok(())
+}
+pub async fn login<C: RecordCodec, H: Host>(
+    repo: &Repository<'_, C>,
+    host: &H,
+    attempts: &LoginAttempts,
+    headers: &HeaderMap,
+    body: &Value,
+    secure: bool,
+    request: crate::AdmissionContext,
+) -> Result<Response, Error> {
+    let crate::AdmissionContext { now, client } = request;
+    origin(headers, secure)?;
+    let username = required(body, "username", 128)?;
+    required(body, "password", 1024)?;
+    let limits = crate::RequestLimits::from_policy(&host.registration_policy()?)?;
+    if !attempts
+        .admit_with(&limits, crate::Admission::Login, client, username, now)
+        .await
+    {
+        return Err(Error::Public(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts. Try again in 1 minute.".into(),
+        ));
+    }
+    let protection = crate::LoginProtection::from_policy(&host.registration_policy()?)?;
+    let delay = match attempts
+        .login_gate(&protection, client, username, now)
+        .await
+    {
+        crate::LoginGate::Blocked { retry_after } => return Ok(blocked(retry_after)),
+        crate::LoginGate::Proceed { delay } => delay,
+    };
+    // Waiting before the password check keeps both outcomes equally slow.
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+    }
+    let result = login_admitted(repo, host, attempts, headers, body, secure, request).await;
+    if matches!(&result, Err(Error::Public(StatusCode::UNAUTHORIZED, _))) {
+        attempts
+            .failed_login(&protection, client, username, now)
+            .await;
+    }
+    result
+}
+fn blocked(retry_after: u64) -> Response {
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({
+            "error": format!("Too many failed sign-ins. Try again in {}.", wait_text(retry_after)),
+            "retry_after": retry_after,
+        })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert("retry-after", HeaderValue::from(retry_after));
+    response
+}
+/// A wait as people say it: whole minutes once it reaches a minute, rounded up.
+fn wait_text(seconds: u64) -> String {
+    match seconds {
+        0..=1 => "1 second".to_owned(),
+        2..=59 => format!("{seconds} seconds"),
+        60 => "1 minute".to_owned(),
+        _ => format!("{} minutes", seconds.div_ceil(60)),
+    }
+}
+// Registration has already passed its independent admission window.
+pub(crate) async fn login_admitted<C: RecordCodec, H: Host>(
+    repo: &Repository<'_, C>,
+    host: &H,
+    attempts: &LoginAttempts,
+    headers: &HeaderMap,
+    body: &Value,
+    secure: bool,
+    request: crate::AdmissionContext,
+) -> Result<Response, Error> {
+    let crate::AdmissionContext { now, client } = request;
+    let username = required(body, "username", 128)?;
+    let password = required(body, "password", 1024)?;
+    let proof = repo
+        .verify_credentials(username, password.into())
+        .await
+        .map_err(|error| {
+            if error.is::<tokio::sync::TryAcquireError>() {
+                Error::Public(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Password service busy; try again shortly".into(),
+                )
+            } else if error.is::<tokio::task::JoinError>() {
+                bad("Sign in unavailable")
+            } else {
+                Error::Storage(error)
+            }
+        })?
+        .ok_or_else(unauthorized)?;
+    // Access validates its grant fields; the credential proof remains bound to the inspected generation.
+    if host.account_view(proof.account_state()).is_err() {
+        return Err(unauthorized());
+    }
+    repo.record_user_login(&proof.identity().user_id, now)
+        .await?;
+    attempts.successful_login(client, username).await;
+    let user = proof.identity().username.clone();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("Unknown browser");
+    let session = repo.issue_verified_session(proof, now, user_agent).await?;
+    let mut response = Json(json!({"csrf_token":session.csrf,"user":user})).into_response();
+    response.headers_mut().insert(
+        "set-cookie",
+        HeaderValue::from_str(&crate::session_cookie(
+            &session.token,
+            session.expires - now,
+            secure,
+        ))
+        .map_err(|_| bad("Sign in unavailable"))?,
+    );
+    Ok(response)
+}
+pub async fn setup_status<C: RecordCodec>(repo: &Repository<'_, C>) -> Api {
+    Ok(Json(
+        json!({"initialized":repo.has_admin_account().await?||repo.legacy_admin_exists().await?}),
+    ))
+}
+pub async fn setup_admin<C: RecordCodec, H: Host>(
+    repo: &Repository<'_, C>,
+    host: &H,
+    attempts: &LoginAttempts,
+    headers: &HeaderMap,
+    body: &Value,
+    secure: bool,
+    request: crate::AdmissionContext,
+) -> Result<Response, Error> {
+    origin(headers, secure)?;
+    let username = body["username"].as_str().unwrap_or("admin").trim();
+    let username = if username.is_empty() {
+        "admin"
+    } else {
+        username
+    };
+    if username.len() > 128 {
+        return Err(bad("Invalid username"));
+    }
+    let password = required(body, "password", 1024)?;
+    if !crate::password_length_ok(password) {
+        return Err(bad("Password must be at least 8 characters"));
+    }
+    let _guard = host.gate().lock().await;
+    if repo.has_admin_account().await? || repo.legacy_admin_exists().await? {
+        return Err(Error::Public(
+            StatusCode::CONFLICT,
+            "Admin already exists".into(),
+        ));
+    }
+    let hash = crate::hash_password(password.into())
+        .await
+        .map_err(|error| crate::api::password_error(error, "Password hashing failed"))?;
+    host.create_administrator(username, &hash, &uuid::Uuid::new_v4().to_string())
+        .await?;
+    login(
+        repo,
+        host,
+        attempts,
+        headers,
+        &json!({"username":username,"password":password}),
+        secure,
+        request,
+    )
+    .await
+}
+pub async fn me<C: RecordCodec, H: Host>(repo: &Repository<'_, C>, host: &H, doc: &Value) -> Api {
+    let user = doc["_user_id"].as_str().unwrap_or("admin");
+    let profile = repo.user_profile(user).await?;
+    let account = repo
+        .account_state(user)
+        .await?
+        .ok_or_else(|| Error::Public(StatusCode::UNAUTHORIZED, "Sign in required".into()))?;
+    let administrator = host
+        .administrator_account(&account)
+        .map_err(|_| bad("Account unavailable"))?;
+    Ok(Json(
+        json!({"user":account["username"],"user_id":user,"display_name":profile.as_ref().map(|p|&p["display_name"]),"is_admin":administrator,"role":account["role"],"status":account["status"],"tier_id":account["tier_id"],"csrf_token":doc["csrf"]}),
+    ))
+}
+pub async fn logout<C: RecordCodec>(
+    repo: &Repository<'_, C>,
+    headers: &HeaderMap,
+) -> Result<Response, Error> {
+    let token = crate::session_token(headers);
+    repo.logout(token).await?;
+    let mut response = Json(json!({"ok":true})).into_response();
+    response.headers_mut().insert(
+        "set-cookie",
+        HeaderValue::from_static("v3_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"),
+    );
+    Ok(response)
+}
+
+#[cfg(test)]
+mod wait_text_tests {
+    #[test]
+    fn waits_read_as_people_say_them() {
+        for (seconds, text) in [
+            (1, "1 second"),
+            (45, "45 seconds"),
+            (60, "1 minute"),
+            (61, "2 minutes"),
+            (120, "2 minutes"),
+            (3600, "60 minutes"),
+        ] {
+            assert_eq!(super::wait_text(seconds), text);
+        }
+    }
+}

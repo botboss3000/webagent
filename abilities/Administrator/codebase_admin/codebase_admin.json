@@ -1,0 +1,29 @@
+{
+  "display_name": "Codebase Admin",
+  "kind": "ability",
+  "icon": "folder-cog",
+  "color": "#bb9af7",
+  "description": "Inspect published or isolated source, run checks, and publish authorized broker work. Runtime configuration retains its owning APIs.",
+  "skill_summary": "Chat identity is automatic. Use broker_id omitted to continue, new to separate an outcome, or a returned Broker ID to switch. Legacy task_id is a compatibility alias. Source edits are isolated; use returned Broker ID for private reads. Finish explicitly to deploy.",
+  "migration_note": "Native tools in the Rust tool worker and the app; core authorization and protected broker services remain authoritative.",
+  "order": 1,
+  "placeholder": false,
+  "tools": [
+    "file_list",
+    "file_read",
+    "file_search",
+    "file_edit",
+    "file_write",
+    "state_inspect",
+    "prompt_slot_read",
+    "prompt_slot_write",
+    "shell",
+    "python",
+    "checkout_edit"
+  ],
+  "readiness": "ready",
+  "owner_tier": [
+    "administrator"
+  ],
+  "owner_tier_note": "Hard-coded: Administrator abilities work only for an administrator owner and an administrator caller, whatever this list says."
+}

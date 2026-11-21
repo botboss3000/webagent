@@ -1,0 +1,46 @@
+{
+  "name": "set_agent_tool",
+  "description": "Set availability for one declared tool; does not raise permission or tier ceilings. Request: visibility off/visible/discoverable and expected_revision.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ability_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "agent_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "request": {
+        "type": "object"
+      },
+      "tool": {
+        "maxLength": 128,
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id",
+      "ability_id",
+      "tool",
+      "request"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "make a tool visible for an agent",
+      "turn off a tool for an agent"
+    ],
+    "keywords": [
+      "tool visibility"
+    ]
+  }
+}

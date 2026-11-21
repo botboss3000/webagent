@@ -1,0 +1,468 @@
+//! Durable followup admission and safe delivery at Rust execution boundaries.
+use crate::*;
+fn successor_id(app: &App, sid: &str, entry: &Value) -> Result<String> {
+    webagent_engine::runtime::followup::successor_id(app.store.current_user_id(), sid, entry)
+}
+pub(crate) use webagent_chat::followup::{public, public_entry};
+/// Why a chat's queue waits while one of its runs has an uncertain write to review.
+pub(crate) const RECOVERY_HOLD: &str = "Existing write outcome requires recovery";
+const SHUTOFF_HOLD: &str = "Global shutoff is active";
+const ACCESS_HOLD: &str = "Agent access unavailable";
+const MODEL_HOLD: &str = "Model unavailable; restore access then resume queue";
+/// Retired: a waiting run is no longer recorded as a hold. Stored queues may still carry it.
+const EXISTING_WORK_HOLD: &str = "Existing work must be resolved before queue delivery";
+/// Condition holds lift once their cause is gone; decision holds wait for the user's
+/// next message or an explicit resume. Reached only with no active run and no shutoff.
+async fn condition_cleared(app: &App, q: &Value) -> Result<bool> {
+    Ok(match q["reason"].as_str().unwrap_or("") {
+        EXISTING_WORK_HOLD | SHUTOFF_HOLD => true,
+        ACCESS_HOLD | MODEL_HOLD => {
+            let Some(e) = q["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["status"] == "pending" && e["review_status"] == "acceptable")
+            else {
+                return Ok(false);
+            };
+            let agent = e["agent_id"].as_str().unwrap_or("shared_default");
+            app.store
+                .live_access(app.store.current_user_id(), agent)
+                .await?
+                .admitted()
+                && app.run_candidate(&e["template"]).await.is_ok()
+        }
+        _ => false,
+    })
+}
+pub(crate) async fn should_queue(app: &App, s: &str) -> Result<bool> {
+    let q = app.store.followup_queue(s).await?;
+    Ok(q["held"] == true
+        || q["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e["status"].as_str(), Some("pending" | "reviewing" | "held")))
+        || app
+            .store
+            .get(&format!("manager_pending:{s}"))
+            .await?
+            .is_some()
+        || app
+            .store
+            .active_runs()
+            .await?
+            .iter()
+            .any(|r| r["session_id"] == s && !terminal(status(r))))
+}
+pub(crate) fn prepared_entry(
+    prepared: api::chat::PreparedMessage,
+    choice: &str,
+) -> (Value, Vec<(String, Value)>) {
+    let id = prepared.message["run_id"].as_str().unwrap().to_owned();
+    let mut template = Value::Null;
+    let mut review = Value::Null;
+    let mut docs = vec![];
+    for (key, value) in prepared.docs {
+        if key.starts_with("run:") {
+            template = value;
+        } else if key.starts_with("manager_review:") {
+            template = value["run"].clone();
+            review = value;
+        } else if !key.starts_with("manager_pending:") {
+            docs.push((key, value));
+        }
+    }
+    let e = json!({"id":id,"message_id":format!("user:{id}"),"session_id":template["session_id"],"agent_id":template["agent_id"],"revision":0,"choice":choice,"status":if review.is_null(){"pending"}else{"reviewing"},"content":prepared.message["content"],"context_content":prepared.message.get("context_content").unwrap_or(&prepared.message["content"]),"attachments":prepared.result["attachments"],"agent_message":prepared.message["agent_message"],"template":template,"review":review,"review_status":if review.is_null(){"acceptable"}else{"pending_review"},"created_at":now(),"consuming_run_id":null});
+    (e, docs)
+}
+pub(crate) async fn submit(
+    app: &App,
+    s: &str,
+    body: &Value,
+) -> std::result::Result<Value, ApiError> {
+    if crate::shared_chat::actor(app) != app.store.current_user_id() {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "Private delivery controls belong to the conversation owner".into(),
+        ));
+    }
+    let prepared = api::chat::prepare_followup(app, s, body).await?;
+    // Delivered at the run's next model step; a running tool call is detached for it.
+    let (mut e, docs) = prepared_entry(prepared, "steer");
+    // A compaction-only run takes it once its summary is done, unless the user sends it now.
+    if app
+        .store
+        .active_runs()
+        .await?
+        .iter()
+        .any(|r| r["session_id"] == s && r["compaction_only"] == true && !terminal(status(r)))
+    {
+        e["wait"] = json!("compaction");
+    }
+    let id = e["id"].as_str().unwrap().to_owned();
+    let result = json!({"run_id":null,"submission_id":id,"message_id":e["message_id"],"delivery_state":"queued","queue_entry":public_entry(&e),"attachments":e["attachments"]});
+    let message_id = e["message_id"].clone();
+    let result = app
+        .store
+        .followup_submit(
+            s,
+            e,
+            docs,
+            body["client_message_id"].as_str().unwrap(),
+            &digest(body),
+            &result,
+        )
+        .await
+        .map_err(|e| conflict(&e.to_string()))?;
+    let agent = session_agent_id(app, s).await?;
+    api::chat::record_admitted_turn(app, &agent, &message_id).await;
+    Ok(result)
+}
+pub(crate) async fn apply_steering(app: &App, run: &mut Value) -> Result<bool> {
+    app.engine().apply_steering(run).await
+}
+async fn review_entry(app: App, s: String, e: Value) -> Result<()> {
+    static REVIEW_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let Ok(_permit) = REVIEW_LIMIT.try_acquire() else {
+        return Ok(());
+    };
+    let id = e["id"].as_str().unwrap();
+    let revision = e["revision"].as_u64().unwrap_or(0);
+    if e["template"]["requester_user_id"]
+        .as_str()
+        .is_some_and(|actor| actor != app.store.current_user_id())
+    {
+        return Ok(());
+    }
+    if !app.store.participation_allows_run(&e["template"]).await? {
+        return Ok(());
+    }
+    let mut quota = e["template"].clone();
+    quota["id"] = json!(format!(
+        "followup-review:{}:{}:{id}",
+        app.store.current_user_id(),
+        s
+    ));
+    match app.store.requester_claim_ready(&quota).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(error) if error.to_string() == "Account run limit reached" => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let mut r = e["review"].clone();
+    r["run"]["id"] = quota["id"].clone();
+    r["run"]["requester_user_id"] = json!(app.store.current_user_id());
+    r["status"] = json!("reviewing");
+    r["deadline"] = json!(now() + 50);
+    if !app
+        .store
+        .followup_review_cas(&s, id, revision, "reviewing", Some(&r))
+        .await?
+    {
+        return Ok(());
+    }
+    let verdict = tokio::time::timeout(
+        Duration::from_secs(45),
+        crate::manager::judge_followup(&app, &mut r),
+    )
+    .await;
+    let (state, review_status) = match verdict {
+        Ok(Ok(crate::manager::Verdict::Acceptable)) => ("pending", "acceptable"),
+        Ok(Ok(crate::manager::Verdict::Unacceptable)) => ("rejected", "unacceptable"),
+        _ => ("held", "review_error"),
+    };
+    r["status"] = json!(review_status);
+    // Choice changes during review must survive; a fresh revision only changes the
+    // gate result, and cancellation always wins over a late provider verdict.
+    let current = app.store.followup_queue(&s).await?;
+    if let Some(current) = current["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == id)
+    {
+        app.store
+            .followup_review_cas(
+                &s,
+                id,
+                current["revision"].as_u64().unwrap_or(0),
+                state,
+                Some(&r),
+            )
+            .await?;
+    }
+    app.store.reconcile_requester_slots().await?;
+    Ok(())
+}
+/// An unheld ledger whose entries are all finished (ledgers keep delivered, cancelled
+/// and rejected entries) has nothing to review, release or deliver. Skipping it saves
+/// rereading its session every pass; a hold it would get (a failed last run, shutoff)
+/// is applied on the first pass after a live entry arrives, before anything dispatches.
+fn idle_ledger(q: &Value) -> bool {
+    q["held"] != true
+        && q["entries"].as_array().into_iter().flatten().all(|e| {
+            matches!(
+                e["status"].as_str(),
+                Some("delivered" | "cancelled" | "rejected")
+            )
+        })
+}
+pub(crate) async fn scheduler_tick(app: &App) -> Result<()> {
+    if let Err(error) = crate::session_messaging::deliver_notices(app).await {
+        tracing::warn!("Session notice delivery deferred: {error}");
+    }
+    let queues = app.store.list("followup_queue:").await?;
+    for q in queues {
+        let s = q["session_id"].as_str().unwrap_or("").to_owned();
+        if s.is_empty() || idle_ledger(&q) {
+            continue;
+        }
+        // One unreadable or failing ledger defers only its own session.
+        if let Err(error) = tick_session(app, &s).await {
+            tracing::warn!(session_id = %s, "Followup queue reconciliation deferred: {error}");
+        }
+    }
+    Ok(())
+}
+
+async fn tick_session(app: &App, s: &str) -> Result<()> {
+    let s = s.to_owned();
+    // Archived or deleted chats retain history, but cannot dispatch work.
+    // Skip them here so one inactive ledger cannot stall other conversations.
+    let Some(session) = app.store.get(&format!("session:{s}")).await? else {
+        return Ok(());
+    };
+    if session["status"].as_str().unwrap_or("active") != "active"
+        || app.store.participation_state(&s).await?["active"] != true
+    {
+        return Ok(());
+    }
+    crate::session_messaging::revalidate(app, &s).await?;
+    let q = app.store.followup_queue(&s).await?;
+    for e in q["entries"].as_array().unwrap() {
+        if e["review_status"] == "pending_review" {
+            tokio::spawn(review_entry(app.clone(), s.clone(), e.clone()));
+        } else if e["review_status"] == "reviewing"
+            && e["review"]["deadline"].as_u64().unwrap_or(0) <= now()
+        {
+            let mut r = e["review"].clone();
+            r["status"] = json!("review_error");
+            app.store
+                .followup_review_cas(
+                    &s,
+                    e["id"].as_str().unwrap(),
+                    e["revision"].as_u64().unwrap_or(0),
+                    "held",
+                    Some(&r),
+                )
+                .await?;
+        }
+    }
+    if app.shutoff().await? {
+        app.store.followup_hold(&s, SHUTOFF_HOLD).await?;
+        return Ok(());
+    }
+    let active = app.store.active_runs().await?;
+    // A run parked on an approval leaves the conversation free for the next run.
+    if let Some(r) = active
+        .iter()
+        .find(|r| r["session_id"] == s && r["parked"] != true)
+    {
+        // Delivery simply waits for live work; only an uncertain write is recorded
+        // as a hold, because it needs a decision before anything runs again.
+        if r["uncertain"] == true
+            && matches!(
+                status(r),
+                "stopped" | "paused" | "recovery" | "waiting_external"
+            )
+        {
+            app.store.followup_hold(&s, RECOVERY_HOLD).await?;
+        }
+        return Ok(());
+    }
+    if app
+        .store
+        .get(&format!("manager_pending:{s}"))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if q["held"] == true {
+        if !condition_cleared(app, &q).await? {
+            return Ok(());
+        }
+        let reason = q["reason"].as_str().unwrap_or("").to_owned();
+        app.store.followup_release_hold(&s, &reason).await?;
+        return Ok(());
+    }
+    let latest = app.store.followup_last_run(&s).await?;
+    if latest.as_ref().is_some_and(|r| {
+        matches!(status(r), "failed" | "cancelled") && q["resumed_after_run_id"] != r["id"]
+    }) {
+        app.store
+            .followup_hold(
+                &s,
+                "Previous run stopped or failed; resume the queue when ready",
+            )
+            .await?;
+        return Ok(());
+    }
+    // Steers left when a run ended start the next run together.
+    let Some(e) = q["entries"].as_array().unwrap().iter().find(|e| {
+        e["status"] == "pending" && e["review_status"] == "acceptable" && e["choice"] == "steer"
+    }) else {
+        return Ok(());
+    };
+    let agent = e["agent_id"].as_str().unwrap_or("shared_default");
+    let access = app
+        .store
+        .live_access(app.store.current_user_id(), agent)
+        .await?;
+    if !access.admitted() {
+        app.store.followup_hold(&s, ACCESS_HOLD).await?;
+        return Ok(());
+    }
+    if active.len() >= app.runtime.read().await.scheduler.max_unresolved_runs
+        || active.len() >= access.max_active_runs() as usize
+    {
+        return Ok(());
+    }
+    let mut next = e["template"].clone();
+    if app.run_candidate(&next).await.is_err() {
+        app.store.followup_hold(&s, MODEL_HOLD).await?;
+        return Ok(());
+    }
+    next["id"] = json!(successor_id(app, &s, &e)?);
+    next["created_at"] = json!(now());
+    next["updated_at"] = json!(now());
+    app.store
+        .followup_consume(&s, "next_run", &mut next)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn only_unheld_ledgers_with_finished_entries_are_skipped() {
+        assert!(idle_ledger(&json!({"session_id":"s","entries":[]})));
+        assert!(idle_ledger(&json!({"session_id":"s"})));
+        assert!(idle_ledger(&json!({"session_id":"s","entries":[
+            {"status":"delivered"},{"status":"cancelled"},{"status":"rejected"}]})));
+        assert!(!idle_ledger(
+            &json!({"session_id":"s","entries":[],"held":true})
+        ));
+        for live in ["pending", "reviewing", "held", "queued"] {
+            assert!(
+                !idle_ledger(&json!({"session_id":"s","entries":[
+                {"status":"delivered"},{"status":live}]})),
+                "{live}"
+            );
+        }
+        assert!(!idle_ledger(&json!({"session_id":"s","entries":[{}]})));
+    }
+    #[tokio::test]
+    async fn inactive_ledgers_cannot_block_other_sessions_or_create_orphan_runs() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        for sid in ["a_archived", "b_deleted", "c_active"] {
+            app.store
+                .put(
+                    &format!("session:{sid}"),
+                    &json!({"id":sid,"status":"active","agent_id":"shared_default"}),
+                )
+                .await
+                .unwrap();
+            let e = json!({"id":format!("message_{sid}"),"message_id":format!("user:message_{sid}"),"session_id":sid,"agent_id":"shared_default","revision":0,"choice":"steer","status":"pending","review_status":"acceptable","content":"pending","context_content":"pending","attachments":[]});
+            app.store
+                .followup_submit(sid, e, vec![], "submit", "digest", &json!({}))
+                .await
+                .unwrap();
+        }
+        app.store
+            .put(
+                "session:a_archived",
+                &json!({"id":"a_archived","status":"archived"}),
+            )
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM docs WHERE key='session:b_deleted'")
+            .execute(&app.store.pool)
+            .await
+            .unwrap();
+        app.store
+            .put("control", &json!({"shutoff":true}))
+            .await
+            .unwrap();
+        // An unreadable ledger sorted first defers only its own session.
+        app.store
+            .put(
+                "session:0_bad",
+                &json!({"id":"0_bad","status":"active","agent_id":"shared_default"}),
+            )
+            .await
+            .unwrap();
+        app.store
+            .put(
+                "followup_queue:0_bad",
+                &json!({"schema_version":2,"session_id":"0_bad"}),
+            )
+            .await
+            .unwrap();
+        scheduler_tick(&app).await.unwrap();
+        assert_eq!(
+            app.store.followup_queue("c_active").await.unwrap()["held"],
+            true
+        );
+        for sid in ["a_archived", "b_deleted"] {
+            assert_eq!(app.store.followup_queue(sid).await.unwrap()["held"], false);
+            assert!(app
+                .store
+                .followup_hold(sid, "must not dispatch")
+                .await
+                .is_err());
+        }
+        assert!(app.store.active_runs().await.unwrap().is_empty());
+    }
+    // Condition holds lift on their own once the cause is gone; decision holds stay.
+    #[tokio::test]
+    async fn condition_holds_release_without_resume_and_decision_holds_stay() {
+        let (_root, app) = crate::runtime_tests::fixture().await;
+        let sid = "held";
+        app.store
+            .put(
+                &format!("session:{sid}"),
+                &json!({"id":sid,"status":"active","agent_id":"shared_default"}),
+            )
+            .await
+            .unwrap();
+        let e = json!({"id":"message_held","message_id":"user:message_held","session_id":sid,"agent_id":"shared_default","revision":0,"choice":"steer","status":"pending","review_status":"acceptable","content":"pending","context_content":"pending","attachments":[]});
+        app.store
+            .followup_submit(sid, e, vec![], "submit", "digest", &json!({}))
+            .await
+            .unwrap();
+        app.store
+            .put("control", &json!({"shutoff":false}))
+            .await
+            .unwrap();
+        for reason in [EXISTING_WORK_HOLD, SHUTOFF_HOLD] {
+            app.store.followup_hold(sid, reason).await.unwrap();
+            scheduler_tick(&app).await.unwrap();
+            assert_eq!(app.store.followup_queue(sid).await.unwrap()["held"], false);
+        }
+        for reason in [
+            RECOVERY_HOLD,
+            "Previous run stopped or failed; resume the queue when ready",
+        ] {
+            app.store.followup_hold(sid, reason).await.unwrap();
+            scheduler_tick(&app).await.unwrap();
+            let q = app.store.followup_queue(sid).await.unwrap();
+            assert_eq!(
+                (q["held"].clone(), q["reason"].clone()),
+                (json!(true), json!(reason))
+            );
+        }
+    }
+}

@@ -1,0 +1,621 @@
+import { createAppViewDispatcher, appViewUrl, credentialRequest } from './app-control.js';
+import { openRegistrationDialog } from './registration.js';
+import {createMainNotes} from '../elements/main-notes/index.js';
+// Locates the v3 chat panel lifecycle, transcript, and run controls Config: data/config/chat.json -> chat_display.default and chat_common.composer.keyboard_focus.
+// V2-style panel/client separation; markup and message protocol remain V3.
+// Panel feeds selected-session runs/live messages to display policy from data/config/chat.json -> chat_common.screen_display and surface overrides; history loading is excluded.
+import {mountScreenAwake} from '../screen-awake/screen-awake.js';
+import {mountChatControlFeedback} from '../controls/feedback.js';
+import {mountSharedChat} from '../controls/shared-chat.js';
+import { createChatClient } from './client.js';
+import {mountFollowupQueue} from './followup-queue.js';
+import {mountTranscriptAnchor} from './transcript-anchor.js';
+import {forwardFooterGestures,pullRefreshOwnsPull} from './footer-gesture-forward.js';
+import {mountUiTrace} from './ui-trace.js';
+import {mountChatZoom} from './chat-zoom.js';
+import {mountComposerMedia,describesUploads} from '../controls/composer-media.js';
+import {mountVoiceReply} from '../controls/voice-reply.js';
+import {mountSessionControls} from '../controls/session-controls.js';
+import {mountChatActionPanel,createChatAction} from './chat-action-panel.js';
+import {buildReplyForm,answeredPanelRuns} from './reply-panel.js';
+import {mountUsageStats} from '../controls/usage-stats.js';
+import {watchIdlePause,idlePaused} from './idle-pause.js';
+import {mountBrowserLink} from './browser-link.js';
+import {createMessageRow as createMessage,updateAdmission} from './message-view.js';
+import {mountTranscriptWindow} from './transcript-window.js';
+import {closeGutterOverlays,updateGutterTimes} from './bubble-gutters.js';
+import {mountComposerProgress} from './composer-progress.js';
+import {createChatElements} from '../elements/index.js';
+import {closeChatElementFullView} from './full-view.js';
+import {currentChatProfile} from '../controls/chat-config.js';
+import { applyChatConfig, setChatConfigAgent } from '../controls/chat-config.js';
+import { enterSubmits, resolveEnterBehavior } from './composer-enter.js';
+import { readDraft, saveDraft, adoptNewDraft } from './composer-draft.js';
+import { shouldCreateSession } from './session-start.js';
+import { mountSessionDropdown } from '../controls/session-dropdown/controller.js';
+import { createSessionList } from '../controls/session-dropdown/list.js';
+import { createBrokerChip } from '../controls/broker-chip.js';
+import { createArtifactsChip } from '../controls/artifacts-chip.js';
+import { createTasksChip } from '../controls/tasks-chip.js';
+import { createActionsChip } from '../controls/actions-chip.js';
+import {createRecoveryDetails} from './recovery-details.js';
+const mountedPanels = new WeakMap();
+/**
+ * Mounts the V3 chat partial, transport, transcript and controls under the supplied shell root.
+ * Replaces an earlier panel for that root through its destroy lifecycle and returns the panel API.
+ * Called by ui/shell/app.js with the authenticated request, action guard, identity and selected-agent adapters.
+ * Reports session/run/sent changes through onEvent and returns the mounted panel API.
+ * Missing or incomplete partial markup and synchronous setup failures propagate to the shell.
+ */
+export async function mountChatPanel({root = document.getElementById('chat-panel'), createStream, resolveAsset, enableMainNotes=true, onEvent = () => {}, request, guard, note, clearNoticeFrom, issues, keyId, forgetKey, refresh, getState, getAgentId, getIdentity=()=>({}), onLogin=null}) {
+  mountedPanels.get(root)?.destroy();
+  // Resolves partial element IDs only within this panel root.
+  const $ = id => root.querySelector('#' + id);
+  let session = '';
+  // Runs whose user message is a panel's answer: the completed panel is what the transcript shows.
+  let panelAnswerRuns=new Set();
+  const dispatchAppView=createAppViewDispatcher();
+  // Chat elements share the panel session, public runs and merged profile; private groups retain admin gating.
+  const activity=createChatElements({app:{/* Reads the current selected session. */get currentSessionId(){return session;}},/* Returns the current account's admin flag. */isAdmin:()=>!!getIdentity().is_admin,/* Uses profile configuration when set, otherwise the default. */chatUiFlag:(key,fallback)=>currentChatProfile()?.[key]??fallback});
+  let activityRuns=[],ownRunsBusy=false;
+  const expandedApprovals=new Set();
+  const expandedRecovery=new Set();
+  const gutterRuns=new Map();
+  /** Keeps recent run snapshots available to message gutters, trimming older entries to 100. */
+  function rememberRuns(items){for(const run of items)gutterRuns.set(run.id,run);for(const [id] of [...gutterRuns.entries()].sort((a,b)=>(b[1].updated_at||0)-(a[1].updated_at||0)).slice(100))gutterRuns.delete(id);}
+  /** Refreshes gutter run details from the session snapshot, ignoring stale-session replies. */
+  async function refreshGutterRuns(id=session){const epoch=sessionGeneration;try{const data=await client.snapshot(id);if(id===session&&epoch===sessionGeneration){rememberRuns(data.runs||[]);issues?.resolve('message_statistics',id);}}catch(error){if(id===session&&epoch===sessionGeneration)issues?issues.fail('message_statistics',error,id):note('Message statistics unavailable: '+error.message);}}
+  // Projects panel run states into the activity view's display-state vocabulary.
+  const paintActivity=()=>{try{activity.render({sessionId:session,runs:activityRuns.map(r=>({...r,state:({completed:'completed',failed:'failed',stopped:'cancelled',waiting_approval:'running',waiting_gate:'finalizing'})[r.status]||r.status}))},$('chat-messages-inner'));issues?.resolve('activity_display',session);}catch(error){if(issues)issues.fail('activity_display',error,session);else note('Activity display unavailable: '+error.message);}};
+  const client = createChatClient({request, note, issues, clearNoticeFrom, createStream, cacheUser:()=>getIdentity()?.user_id||''});
+  let privacyMode=null;
+  // The server's tools notice (agent has no saved capability levels) shares the privacy hint line.
+  function privacyNotice(mode,toolsNotice){privacyMode=mode;const notice=$('chat-privacy-notice');if(!notice)return;
+    const privacy=mode==='private'?'':mode==='operator_reviewable'?'':'Conversation privacy is loading…';
+    notice.textContent=[toolsNotice,privacy].filter(Boolean).join(' ');notice.hidden=!notice.textContent;}
+  // Remaining messages under the caller's level limits for this agent; hidden when unlimited.
+  async function loadAllowance(){const hint=$('chat-allowance-hint');if(!hint)return;
+    try{const {limits}=await request('/agents/'+encodeURIComponent(getAgentId())+'/allowance');
+      const text=limits.map(item=>Math.max(0,item.limit-item.used)+' of '+item.limit+' message'+(item.limit===1?'':'s')+' left (rolling '+item.window+')').join(' · ');
+      hint.textContent=text;hint.hidden=!text;}catch{hint.hidden=true;}}
+  async function loadAgentPrivacy(){if(session)return;void setChatConfigAgent(getAgentId());privacyNotice(null);try{const data=await request('/agents/'+encodeURIComponent(getAgentId())+'/access-summary');if(!session)privacyNotice(data.conversation_privacy,data.tools_notice);}catch(error){if(!session){privacyNotice(null);const notice=$('chat-privacy-notice');if(notice)notice.textContent='Conversation privacy unavailable. Retry before sending.';}}}
+/** Fetches, validates, and mounts the required V3 chat partial into the supplied root. */
+async function mountChat(){
+  const response=await fetch('/ui/chat/chat.html?v=chat-partial-20261027-actions',{credentials:'same-origin'});
+  if(!response.ok)throw Error('Chat shell unavailable');
+  const template=document.createElement('template');
+  template.innerHTML=await response.text();
+  for(const id of ['chat-header','chat-messages','chat-messages-inner','sessions','new','chat-action-panel','composer','chat-input','chat-send','chat-stop-btn']){
+    if(!template.content.querySelector('#'+id))throw Error('Chat shell is incomplete: '+id);
+  }
+  root.replaceChildren(template.content);
+  // The header selector is placed by chat configuration (per-agent presence and location);
+  // never paint it before that configuration has been applied.
+  const headerDropdown=root.querySelector('#session-dropdown');
+  if(headerDropdown&&!currentChatProfile())headerDropdown.hidden=true;
+}
+await mountChat();
+// Main Notes mounts itself as a chip in the session-tabs row; the live profile gates its visibility.
+const mainNotes=enableMainNotes?createMainNotes({request,enabled:()=>currentChatProfile()?.chat_header?.controls?.main_notes?.enabled!==false}):null;
+// Display activity uses authoritative selected-session run states and live publications.
+const screenAwake=mountScreenAwake(root,{getProfile:currentChatProfile});
+const chatActions=mountChatActionPanel({root,guard,request,note});
+const {messagingRoutes}=chatActions;
+const anchor=mountTranscriptAnchor({scroller:$('chat-messages'),inner:$('chat-messages-inner'),header:$('chat-header'),getProfile:currentChatProfile});
+// Draws a bounded slice of the transcript; rows in a batch skip the per-row activity repaint.
+const transcriptWindow=mountTranscriptWindow({scroller:$('chat-messages'),inner:$('chat-messages-inner'),getProfile:currentChatProfile,render:item=>message(item,false),paint:()=>{paintActivity();placeCards();}});
+// A gesture that begins over the footer has no scrollable ancestor; forward it to the transcript.
+const disposeFooterGestures=forwardFooterGestures({targets:[$('chat-input-area'),$('chat-footer-row')],scroller:$('chat-messages'),markIntent:anchor.intent});
+// Header drags scroll too. The app header is mobile-only, and a downward pull that the
+// pull-to-refresh indicator already owns stays with refresh; upward pulls always scroll.
+const mobileHeaderLayout=matchMedia('(max-width:800px)');
+const disposeHeaderGestures=forwardFooterGestures({
+  targets:[$('chat-header'),document.getElementById('main-header')],
+  scroller:$('chat-messages'),
+  markIntent:anchor.intent,
+  canForward:(event,el)=>el.id!=='main-header'||mobileHeaderLayout.matches,
+  touchGuard:pullRefreshOwnsPull,
+});
+// Diagnostics ui_trace collection runs only while that category is enabled.
+const uiTrace=mountUiTrace({request,getSessionId:()=>session});
+mountBrowserLink({request});
+// Pinch / Ctrl+wheel zoom scales only the transcript content; destroy removes its listeners and chip.
+const disposeZoom=mountChatZoom({root,scroller:$('chat-messages'),inner:$('chat-messages-inner'),header:$('chat-header')});
+// Progress visibility is filtered using the current account's administrator identity.
+const progress=mountComposerProgress({root,getProfile:currentChatProfile,isAdmin:()=>!!getIdentity().is_admin});
+const stats=mountUsageStats({root,client,note,issues});
+// Refreshes relative gutter times once per second while visible; destroy clears this timer.
+const gutterClock=setInterval(()=>{if(document.visibilityState==='visible')updateGutterTimes(root);},1000);
+// Session-control capability updates enable or disable the media adapter.
+const controls=mountSessionControls({root,client,guard,note,issues,ensureSession,notifications:chatActions,canWrite:()=>sharedAccess?.can_control!==false,/* Forwards advertised attachment availability and limits, and whether the selected model reads images itself, to media controls. */onState:data=>{media?.setAvailable(sharedAccess?.can_send!==false&&data?.composer?.attachments===true,data?.composer?.attachment_limits);media?.setDescribeImages(describesUploads(data));}});
+let credentialView=null,submitting=false,sessionGeneration=0,creatingSession=null,media=null,voiceReply=null,historyBusy=false,historyLastSeq=0,historyRevision=0,historyDeferredRevision=0,historyReady=false,historyFailed=false,closeUndoDialog=null,canManageQueue=false;
+const historyRequests=new Map();
+const followups=mountFollowupQueue({root,client,getSession:()=>session,canWrite:()=>canManageQueue&&sharedAccess?.can_control!==false,guard,note,keyId,forgetKey,onSnapshot:syncSnapshot});
+/** Background history reopening is independent from explicit undo/fork action feedback. */
+async function reopenHistory(id){
+  const pending=open(id,'replace'),generation=sessionGeneration;
+  try{await pending;if(id===session&&generation===sessionGeneration)issues?.resolve('history_refresh',id);}
+  catch(error){if(id!==session||generation!==sessionGeneration)return;if(issues)issues.fail('history_refresh',error,id);else note(error.message);}
+}
+/** Rewinds rebuild the transcript; queue and poll snapshots may only merge the same history revision. */
+function historyChanged(summary){
+  if((summary?.history_revision||0)>historyRevision){if(historyBusy)historyDeferredRevision=Math.max(historyDeferredRevision,summary.history_revision);else void reopenHistory(session);}
+}
+/** Merge a matching-session poll snapshot only when it shares the displayed history revision. */
+function syncSnapshot(data){
+  if(data.session?.id&&data.session.id!==session)return false;
+  // A credential form is session state. The stream nulls an unchanged app_view, so only a
+  // new revision shows, keeps or clears the card (a saved or dismissed form has request null).
+  if(data.app_view){credentialView=data.app_view;chatActions.showCredential(credentialRequest(credentialView,getIdentity()),session);}
+  if(data.app_view)dispatchAppView(data.app_view,getIdentity(),detail=>{
+    if(detail.destination==='credential')return;
+    if(detail.destination==='registration'){openRegistrationDialog({request});return;}
+    if(detail.destination==='chat'){
+      const toggle=document.getElementById('chat-toggle-btn');if(toggle?.getAttribute('aria-expanded')==='false')toggle.click();return;
+    }
+    if(document.getElementById('chat-input')?.value?.trim()){note('Your draft was preserved. Request navigation again when ready.');return;}
+    const url=appViewUrl(detail.destination,detail.agent_id,location.href,detail.target_session_id);if(url)location.assign(url);
+  });
+  if(typeof data.repeat_similarity==='number')repeatSimilarity=data.repeat_similarity;
+  privacyNotice(data.conversation_privacy,data.tools_notice);if(data.access){sharedAccess=sessionAccess=data.access;canManageQueue=data.access.can_manage_queue!==false;}
+  if((data.session?.history_revision||0)!==historyRevision){historyChanged(data.session);return false;}
+  historyLastSeq=Math.max(historyLastSeq,data.last_seq||0);
+  for(const item of data.messages||[])if(transcriptWindow.accept(item))message(item,false);
+  paintActivity();
+  // Transcript rows land first; display components must never paint ahead of them.
+  if(data.components)components(data.components);
+  if(data.artifacts)artifactsChip.set(data.artifacts);
+  if('task_list' in data)tasksChip.set(data.task_list);
+  followups.update(data);runs(data.runs||[],true);return true;
+}
+/** Confirms rewind and resolves existing composer text without silently discarding a draft. */
+function undoChoice(hasDraft){return new Promise(resolve=>{const dialog=document.createElement('dialog');dialog.className='wa-confirm-panel';dialog.dataset.chatControlSurface='undo';const text=document.createElement('p');text.textContent='Undo this message and all later messages? This changes conversation history; external tool effects remain.';dialog.append(text);if(hasDraft){const hint=document.createElement('p');hint.textContent='The composer already has text. Choose how to return the undone message.';dialog.append(hint);}let settled=false;const finish=value=>{if(settled)return;settled=true;dialog.close();dialog.remove();closeUndoDialog=null;resolve(value);};for(const [label,value] of hasDraft?[['Clear & replace','replace'],['Keep current','keep'],['Append','append'],['Cancel',null]]:[['Undo','replace'],['Cancel',null]]){const node=document.createElement('button');node.type='button';node.className='ac-btn';node.textContent=label;node.onclick=()=>finish(value);dialog.append(node);}dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});closeUndoDialog=()=>finish(null);document.body.append(dialog);dialog.showModal();dialog.querySelector('button:last-child').focus();});}
+/** Uses the displayed transcript cursor, durable retry identity and panel generation fence. */
+async function historyAction(kind,item){
+  if(historyBusy||submitting)return;
+  const sid=session,generation=sessionGeneration,last=historyLastSeq;
+  const draft=$('chat-input').value,actionKey=sid+':'+kind+':'+item.id;historyBusy=true;
+  try{
+    const choice=kind==='undo'?await undoChoice(!!draft.trim()):null;
+    if(kind==='undo'&&choice===null)return;
+    if(sid!==session||generation!==sessionGeneration)return;
+    let pending=historyRequests.get(actionKey);
+    if(!pending){const receipt='history:'+sid+':'+kind+':'+item.id+':'+last;pending={receipt,body:{message_id:item.id,expected_last_seq:last,client_request_id:keyId(receipt)},result:null,composerApplied:false};historyRequests.set(actionKey,pending);}
+    // Keep the retry on the same client operation and durable request body.
+    const execute=()=>client[kind](sid,pending.body);
+    if(!pending.result){try{pending.result=await execute();}catch(error){if(error.status)throw error;pending.result=await execute();}}
+    const data=pending.result;
+    if(sid!==session||generation!==sessionGeneration)return;
+    if(kind==='undo'){
+      const current=$('chat-input').value;
+      if(!pending.composerApplied&&choice!=='keep'){const text=typeof data.text==='string'?data.text:'';
+        $('chat-input').value=choice==='append'||current!==draft?[current,text].filter(Boolean).join('\n'):text;
+        $('chat-input').dispatchEvent(new Event('input',{bubbles:true}));}
+      pending.composerApplied=true;await open(sid,'replace');note('Messages undone');
+    }else{await sessions();await open(data.session_id);note('Conversation forked');}
+    historyRequests.delete(actionKey);forgetKey(pending.receipt);
+  }catch(error){if(error.status>=400&&error.status<500&&!historyRequests.get(actionKey)?.result){const pending=historyRequests.get(actionKey);if(pending)forgetKey(pending.receipt);historyRequests.delete(actionKey);}note(error.message||'Conversation action failed');}
+  finally{historyBusy=false;const pending=historyDeferredRevision;historyDeferredRevision=0;if(sid===session&&pending>historyRevision)void reopenHistory(sid);}
+}
+// The conversation endpoint decides send/control rights; the sharing poll only adds sharing fields.
+// Letting the poll overwrite can_send flipped the focused composer readonly, which closes Android keyboards.
+let sharedAccess=null,sessionAccess=null;
+// Near-duplicate threshold from the session snapshot (closing_status.json); 0 = off.
+let repeatSimilarity=0.8;
+// Sharing state polls every few seconds; only a change since the last poll needs a fresh snapshot.
+let sharingKey='';
+const sharing=mountSharedChat({root,client,guard,note,issues,ensureSession,/* Refresh panel access and session projections after sharing changes. */onState:data=>{sharedAccess=data?.access?{...data.access,...sessionAccess}:sessionAccess;if(sharedAccess?.can_send===false)media?.setAvailable(false);runs(activityRuns);const key=data?JSON.stringify(data):'',changed=sharingKey!==''&&key!==sharingKey;sharingKey=key;if(data&&session&&changed){const sid=session,epoch=sessionGeneration;client.snapshot(sid).then(snapshot=>{if(session!==sid||sessionGeneration!==epoch||!historyReady)return;issues?.resolve('shared_snapshot',sid);if((snapshot.session.history_revision||0)!==historyRevision){if(historyBusy)historyDeferredRevision=Math.max(historyDeferredRevision,snapshot.session.history_revision||0);else void reopenHistory(sid);return;}if(snapshot.access){sharedAccess=sessionAccess=snapshot.access;canManageQueue=snapshot.access.can_manage_queue!==false;}for(const item of snapshot.messages||[])if(transcriptWindow.accept(item))message(item,false);paintActivity();followups.update(snapshot);runs(snapshot.runs||[],true);}).catch(error=>{if(session!==sid||sessionGeneration!==epoch)return;if(issues)issues.fail('shared_snapshot',error,sid);else note(error.message);});}}});
+// Media changes reapply composer layout and refresh run-dependent button states.
+voiceReply=mountVoiceReply({client,note});
+media=mountComposerMedia({root,client,ensureSession,note,guard,getState,refresh,/* Reapplies composer geometry and run-dependent actions after media changes. */changed:()=>{applyChatConfig();runs(activityRuns);}});
+let sessionItems=[];
+// Dropdown refresh reads sessions; its search reset delegates to the session-list controller.
+const dropdown=mountSessionDropdown($('session-dropdown'),{/* Reloads session options. */refresh:()=>sessions(),select:open,guard,/* Clears search through the list controller. */resetSearch:()=>sessionList.reset(),/* Opens with the cached rows. */paintCached:()=>sessionList.paintCached()});
+// Session-list refresh shares the session loader; archive completion resets transcript and session-scoped state.
+const sessionList=createSessionList($('session-dropdown'),{guard,/* Shares the panel session loader. */refresh:()=>sessions(),select:open,client,/* Clears the selected transcript and its session-scoped controls after archive. */archived:()=>{screenAwake.select('');followups.reset();anchor.reset();progress.reset();activity.disconnect();session='';issues?.select('');stats.disconnect();++sessionGeneration;controls.open('');sharing.disconnect();media.open('');client.disconnect();$('chat-messages-inner').replaceChildren();$('chat-input').value=readDraft('');applyChatConfig();chatActions.clearRuns();const url=new URL(location.href);url.searchParams.delete('session_id');history.replaceState({},'',url);}});
+// Header Broker chip: this session's (and its sub-agents') broker tasks and stage cards.
+const brokerChip=createBrokerChip({request,note,family:id=>sessionList.family(id)});
+// The Artifacts chip lists what the agent produced in the open session; snapshots refill it.
+const artifactsChip=createArtifactsChip({session:()=>session,send:text=>submit(text)});
+const tasksChip=createTasksChip({session:()=>session,request,note,canEdit:()=>sharedAccess?.can_send!==false});
+// The Actions chip lists this chat's action-ledger records; the owner settles uncertain ones (the server checks).
+const actionsChip=createActionsChip({session:()=>session,request,canResolve:()=>sharedAccess?.can_control!==false});
+// Exposes dropdown configuration through the session-list controller.
+$('session-dropdown').configure=cfg=>sessionList.configure(cfg);
+const chatPanel=root;
+// Keeps transcript tail clearance aligned with measured header and composer heights.
+const updateChatClearance=()=>{
+  const header=$('chat-header').getBoundingClientRect().height;
+  const footer=$('chat-input-area').getBoundingClientRect().height + (parseFloat(getComputedStyle($('chat-input-area')).bottom)||0);
+  if(header)chatPanel.style.setProperty('--v3-chat-header-clearance',`${Math.ceil(header)+12}px`);
+  if(footer)chatPanel.style.setProperty('--v3-chat-footer-clearance',`${Math.ceil(footer)+16}px`);
+};
+// Recomputes clearance when either bounding region changes size.
+const chatClearanceObserver=new ResizeObserver(updateChatClearance);
+chatClearanceObserver.observe($('chat-header'));
+chatClearanceObserver.observe($('chat-input-area'));
+// Aborts panel-wide window/document listeners on destroy.
+const panelAbort=new AbortController();
+// The transcript's newest activity group feeds the open session's dropdown row.
+document.addEventListener('v3:activity-latest',event=>{if(event.detail?.session_id===session)sessionList.patch(session,{activity_counts:event.detail.counts});},{signal:panelAbort.signal});
+// The first session can open before the account loads; re-check its credential form once identity is known.
+window.addEventListener('v3-identity-changed',()=>chatActions.showCredential(credentialRequest(credentialView,getIdentity()),session),{signal:panelAbort.signal});
+let reviewRefreshBusy=false;
+// Rechecks admission rows once per second while a session is open; serializes snapshots and stops in destroy.
+const reviewTimer=setInterval(async()=>{
+  if(!session||reviewRefreshBusy||document.visibilityState==='hidden'||idlePaused())return;
+  const rows=[...$('chat-messages-inner').querySelectorAll('[data-admission-status]')];
+  if(!followups.pending&&!rows.some(row=>['pending_review','reviewing'].includes(row.dataset.admissionStatus)))return;
+  const sid=session,generation=sessionGeneration;reviewRefreshBusy=true;
+  try{
+    const data=await client.snapshot(sid);
+    if(sid!==session||generation!==sessionGeneration)return;
+    if(!syncSnapshot(data))return;
+    issues?.resolve('manager_status',sid);
+    if(rows.some(row=>['pending_review','reviewing'].includes(row.dataset.admissionStatus))&&!data.messages.some(item=>['pending_review','reviewing'].includes(item.admission?.status)))void refresh().then(()=>issues?.resolve('status_poll')).catch(error=>{if(issues)issues.fail('status_poll',error);else note(error.message);});
+  }catch(error){if(sid===session&&generation===sessionGeneration)issues?issues.fail('manager_status',error,sid):note('Manager status unavailable: '+error.message);}
+  finally{reviewRefreshBusy=false;}
+},1000);
+// An unused tab stops costing the server: its event stream and activity polling close, and
+// the next input or showing the tab reopens the conversation, catching up on anything missed.
+const pausedBar=document.createElement('button');pausedBar.type='button';pausedBar.className='chat-idle-paused';pausedBar.hidden=true;pausedBar.textContent='Paused while idle. Tap to resume';
+// The footer (#chat-input-area) is the visible composer; #composer itself has no box.
+$('chat-input-area').prepend(pausedBar);
+let pausedSession='';
+const idlePause=watchIdlePause({getConfig:currentChatProfile,
+  onPause(){pausedSession=session;client.disconnect();activity.disconnect();pausedBar.hidden=false;},
+  onResume(){pausedBar.hidden=true;const id=pausedSession;pausedSession='';if(id&&id===session)void open(id,'replace');}});
+/** Removes transcript rows already drawn for a panel's answer message. */
+function hidePanelAnswers(){for(const node of [...$('chat-messages-inner').children])if(node.classList.contains('user')&&panelAnswerRuns.has(node.dataset.turnId))node.remove();}
+/** Inserts or updates a public message row and repaints activity. */
+function message(item,repaint=true){historyLastSeq=Math.max(historyLastSeq,item.seq||0);const target=$('chat-messages-inner');const existing=[...target.children].find(row=>row.dataset.publicId===item.id);
+// A panel answer is the user's own message in history; its completed panel shows it, so no row is drawn.
+if(item.role==='user'&&panelAnswerRuns.has(item.run_id)){existing?.remove();return true;}
+if(existing){updateAdmission(existing,item.admission);return;}dropReplacedLive(target,item);const row=createMessage(item,{resolveAsset,/* Supplies the latest cached run for gutter actions. */getRun:()=>gutterRuns.get(item.run_id),client,/* Resolves the currently selected session for message actions. */getSession:()=>session,/* Viewer access, e.g. agent_operator for context-error fixes. */getAccess:()=>sessionAccess,note,historyAction,/* Opens usage/context details for the selected run. */showContext:run=>stats.show(run)});if(!row)return false;const before=[...target.children].find(node=>Number(node.dataset.seq)>item.seq);target.insertBefore(row,before||null);placeCards();if(repaint)paintActivity();return true;}
+// LIVE-SLOT (crates/modules/engine/src/repository.rs): a run's next update, agent publication
+// (`working:<run>:<turn>:…`) or final reply replaces its open live row, the newest non-notice row.
+// The server already deleted that row; remove its copy here too.
+function dropReplacedLive(target,item){const run=item.run_id;if(typeof run!=='string')return;const working='working:'+run+':';if(!(item.id==='assistant:'+run||item.id.startsWith('live:'+run+':')||(item.id.startsWith(working)&&/^\d+:/.test(item.id.slice(working.length)))))return;const rows=[...target.children].filter(row=>row.dataset.publicId&&!row.dataset.noticeRunId);const newest=rows[rows.length-1];// A kept closing message the final reply repeats (nearly) word for word shows once (the server drops it too).
+const repeated=item.id==='assistant:'+run&&newest?.dataset.publicId.startsWith(working)&&newest.dataset.keptText!==undefined&&nearDuplicate(newest.dataset.keptText,item.content);if(newest&&Number(newest.dataset.seq)<item.seq&&(repeated||newest.dataset.publicId.startsWith('live:'+run+':'))){newest.remove();paintActivity();}}
+/** True when two texts share at least the configured share of their distinct words (0 = off); mirrors near_duplicate in src/storage/mod.rs. */
+function nearDuplicate(kept,reply){const threshold=repeatSimilarity;if(!(threshold>0))return false;const words=text=>new Set(String(text||'').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));const a=words(kept),b=words(reply);const union=new Set([...a,...b]).size;let shared=0;for(const word of a)if(b.has(word))shared++;return union>0&&shared>=threshold*union;}
+/** Places each component card among its run's rows where it was created: after the last row at
+ * or before its stored chat position, else the last row written no later than it, else the run's
+ * last row. A stored position far from the time-based one is distrusted and logged. */
+function placeCards(){const target=$('chat-messages-inner');const chained=new Map();for(const card of [...target.children].filter(node=>node.dataset.componentRun).sort((a,b)=>Number(a.dataset.componentCreated||0)-Number(b.dataset.componentCreated||0))){const run=card.dataset.componentRun;const rows=[...target.children].filter(node=>node.dataset.turnId===run&&!node.dataset.componentId);const lastWhere=test=>{let found;for(const row of rows)if(test(row))found=row;return found;};// The server records the run's own published row the panel follows (after_seq); before that row is drawn the panel follows the run's newest row.
+const afterSeq=Number(card.dataset.componentAfter);const after=(afterSeq>0?lastWhere(row=>Number(row.dataset.seq)<=afterSeq):undefined)||rows[rows.length-1];
+// A panel whose turn is not drawn yet waits hidden while older rows are still undrawn, instead of piling up at the end.
+if(!after){card.hidden=transcriptWindow.hasEarlier();continue;}card.hidden=false;const anchor=chained.get(after)||after;if(anchor.nextElementSibling!==card)anchor.after(card);chained.set(after,card);}}
+// Base presentation is display-only. Never turn model-supplied choice or
+// approval descriptions into an action or an authorization control. The one
+// exception is a user_reply choice: a click only sends its label as the user's
+// own message through normal admission, exactly as if typed.
+/** Renders bounded display-only components and user_reply choice buttons. */
+function components(items){
+  if(!Array.isArray(items))return;
+  // An answered panel names the run of the user message that carried its answer; that row stays out.
+  const runs=answeredPanelRuns(items),changed=runs.size!==panelAnswerRuns.size||[...runs].some(run=>!panelAnswerRuns.has(run));
+  if(changed){panelAnswerRuns=runs;hidePanelAnswers();}
+  const current=new Set(items.map(row=>row?.component?.id));
+  for(const node of [...$('chat-messages-inner').children])if(node.dataset.componentId&&!current.has(node.dataset.componentId))node.remove();
+  for(const row of items.slice(0,64))renderComponent(row);
+  placeCards();
+}
+/** Draws one component card in place; answered or dismissed reply panels stay, read-only. */
+function renderComponent(row){
+    const spec=row?.component;
+    const reply=spec?.authority==='user_reply'&&spec.type==='choice';
+    const replyForm=spec?.authority==='user_reply'&&spec.type==='form';
+    // A panel the agent closed is not shown.
+    if(spec?.lifecycle?.dismissed===true){for(const node of [...$('chat-messages-inner').children])if(node.dataset.componentId===spec.id)node.remove();return;}
+    if(!spec||(spec.authority!=='display_only'&&!reply&&!replyForm)||!['status','todo_list','choice','approval','form'].includes(spec.type))return;
+    const id=spec.id;if(typeof id!=='string'||!/^[-A-Za-z0-9_]{1,64}$/.test(id))return;
+    const existing=[...$('chat-messages-inner').children].find(node=>node.dataset.componentId===id);
+    // A locally recorded answer is ahead of the server until its revision arrives.
+    if(existing&&Number(existing.dataset.componentRevision)>=Number(row.revision))return;
+    const card=document.createElement('article');card.className='v3-message assistant';card.dataset.componentId=id;card.dataset.componentRevision=String(row.revision);if(typeof row.run_id==='string')card.dataset.componentRun=row.run_id;if(Number.isFinite(row.created_at))card.dataset.componentCreated=String(row.created_at);if(Number.isFinite(row.after_seq))card.dataset.componentAfter=String(row.after_seq);
+    const body=document.createElement('div');body.className='message-content';
+    const heading=document.createElement('strong');heading.textContent=spec.title||'Session display';
+    body.append(heading);
+    const data=spec.data||{};
+    const place=()=>{card.append(body);if(existing?.isConnected)existing.replaceWith(card);else if(!card.isConnected)$('chat-messages-inner').append(card);placeCards();};
+    if(reply||replyForm){
+      // The answer is recorded on the panel so it shows, read-only, after reload; the first answer stands.
+      const state=spec.lifecycle?.user_state,answer=spec.lifecycle?.answer||{},title=spec.title||(reply?'Choice':'Form');
+      card.classList.add('v3-reply-panel');if(state)card.classList.add('is-'+state);
+      if(typeof data.prompt==='string'&&data.prompt){const prompt=document.createElement('p');prompt.className='v3-reply-prompt';prompt.textContent=data.prompt;body.append(prompt);}
+      const settle=(value)=>{spec.lifecycle=value?{user_state:'answered',answer:value}:{user_state:'dismissed'};renderComponent({...row,revision:Number(row.revision||0)+1});};
+      const dismiss=document.createElement('button');dismiss.type='button';dismiss.className='v3-reply-dismiss';dismiss.textContent='Dismiss';
+      dismiss.onclick=async()=>{dismiss.disabled=true;try{await client.dismissComponent(session,id,null);settle(null);}catch(error){dismiss.disabled=false;note(error.message);}};
+      // A choice panel is one required round single-choice list; its recorded answer names the option id.
+      const options=reply?(Array.isArray(data.options)?data.options.slice(0,8):[]).filter(option=>typeof option?.label==='string'&&option.label):[];
+      const fields=reply?[{name:'choice',label:'',type:'radio',options:options.map(option=>option.label),required:true}]:(Array.isArray(data.fields)?data.fields.slice(0,20):[]).filter(field=>typeof field?.name==='string');
+      const comments=!reply&&answer.comments&&typeof answer.comments==='object'?answer.comments:{};
+      const values=reply?{choice:options.find(option=>option.id===answer.option_id)?.label||''}:answer.values&&typeof answer.values==='object'?answer.values:{};
+      const form=buildReplyForm({fields,paged:!reply&&data.paged===true,state,values,comments,dismiss,
+        // A panel's + stages files on the composer, so they go out with the answer message.
+        addFiles:async files=>{await media.add(files);return media.count;},
+        // A submitted panel is one user message: "Title: value", or the title then one "Label: value" line per field.
+        send:async answers=>{
+          const submitted=reply?{option_id:options.find(option=>option.label===answers[0].value)?.id}:{values:Object.fromEntries(answers.map(item=>[item.name,item.value])),comments:Object.fromEntries(answers.filter(item=>item.comment).map(item=>[item.name,item.comment]))};
+          try{await answerPanel(id,submitted,Number(row.revision||0));}catch(error){note(error.message);throw error;}
+          settle(submitted);
+        }});
+      body.append(form);place();return;
+    }
+    const lines=spec.type==='status'?data.sections?.map(item=>[item.label,item.value].filter(Boolean).join(': ')):
+      spec.type==='todo_list'?data.items?.map(item=>(item.done?'☑ ':'☐ ')+item.label):
+      spec.type==='choice'?data.options?.map(item=>'Option: '+item.label):
+      spec.type==='form'?data.fields?.map(item=>'Field: '+item.label):
+      [data.message];
+    for(const value of Array.isArray(lines)?lines.slice(0,100):[]){
+      if(typeof value!=='string')continue;
+      const line=document.createElement('p');line.textContent=value;body.append(line);
+    }
+    if(['choice','approval','form'].includes(spec.type)){
+      const note=document.createElement('small');note.textContent='Display only — no action submitted';body.append(note);
+    }
+    card.append(body);if(existing)existing.replaceWith(card);else $('chat-messages-inner').append(card);
+}
+
+// Focus follows a session load only while the initiating focus choice is unchanged.
+/** Watches focus during an async load; returns a predicate and listener remover for the caller's finally block. */
+function watchFocus(){const source=document.activeElement;let moved=false;/* Records focus leaving the initiating control during the load. */const onFocus=()=>{if(document.activeElement!==source)moved=true;};document.addEventListener('focusin',onFocus);return {/* Allows focus restore only while the user has not moved focus. */unchanged:()=>!moved&&(document.activeElement===source||(!source.isConnected&&document.activeElement===document.body)),/* Removes the temporary focus listener after the operation. */stop:()=>document.removeEventListener('focusin',onFocus)};}
+// Applies per-profile keyboard-focus policy for new versus existing sessions.
+function shouldFocusComposer(kind){const value=currentChatProfile()?.composer?.keyboard_focus?.[kind];return kind==='new_session'?value!==false:value===true;}
+/** Loads session options and synchronizes both the native select and dropdown list. */
+let sessionsGeneration=0;
+async function sessions(){const turn=++sessionsGeneration;let data;try{data=await client.sessions();if(turn===sessionsGeneration)issues?.resolve('sessions_list');}catch(error){if(issues&&turn===sessionsGeneration)issues.fail('sessions_list',error);throw error;}if(turn!==sessionsGeneration)return data.sessions;$('sessions').replaceChildren();for(const item of data.sessions){const option=document.createElement('option');option.value=item.id;option.textContent=(item.title||'Conversation')+' — '+(item.agent_id||'shared_default');$('sessions').append(option);}$('sessions').value=session;sessionItems=data.sessions;sessionList.update(sessionItems,session,data.flags);return data.sessions;}
+// One list load at start fills the dropdown rows and the flag catalog; later changes arrive by push or on menu open.
+void sessions().catch(error=>{if(!issues)note(error.message);});
+/**
+ * Switches the selected session, resets session-scoped views, then renders its snapshot and live events.
+ * Route mode controls push/replace history; composer focus is restored only if the user did not move it.
+ * Resets the display lease for the selected session; only newly delivered messages restore brightness.
+ * Client snapshot failures propagate; controls report independent issues, or note when no tracker is injected.
+ */
+async function open(id,routeMode='push',focusKind='existing_session',focusWatch=watchFocus()){try{const previous=session;chatActions.clearCredential();mainNotes?.setAgent(null);messagingRoutes.disconnect();canManageQueue=false;sessionAccess=null;sharedAccess={can_send:false,can_control:false};followups.reset();historyReady=false;historyFailed=false;anchor.reset();transcriptWindow.reset();panelAnswerRuns=new Set();sharingKey='';progress.open(id);backgroundCount=0;stoppedRun='';$('chat-stop-btn').dataset.background='false';void checkBackground(id).then(paintBackgroundStop);chatActions.clearRuns();chatActions.clearSendError();closeGutterOverlays();gutterRuns.clear();++sessionGeneration;session=id;if(previous!==id){if(focusKind==='new_session')adoptNewDraft(id);$('chat-input').value=readDraft(id);applyChatConfig();}issues?.select(id);screenAwake.select(id);stats.open(id);brokerChip.open(id);artifactsChip.disconnect();tasksChip.disconnect();actionsChip.open();media.open(id);voiceReply.open(id);activity.disconnect();closeChatElementFullView();session=id;const url=new URL(location.href);url.searchParams.set('session_id',id);if(url.href!==location.href)history[routeMode==='replace'?'replaceState':'pushState']({},'',url);sharing.open(id).catch(error=>{if(id===session&&!issues)note('Shared controls unavailable: '+error.message);});controls.open(id).catch(error=>{if(id===session&&!issues)note(error.message);});const focusGeneration=sessionGeneration;await client.open(id,data=>{privacyNotice(data.conversation_privacy);if(data.access){sharedAccess=sessionAccess=data.access;canManageQueue=data.access.can_manage_queue!==false;}messagingRoutes.open(id,canManageQueue);void messagingRoutes.refresh().catch(error=>note(error.message));historyReady=true;historyLastSeq=data.last_seq||0;historyRevision=data.session.history_revision||0;const sessionAgentId=data.session.agent_id||'shared_default';if(id!==session)return;mainNotes?.setAgent(sessionAgentId);void setChatConfigAgent(sessionAgentId);$('chat-input-row').title='Conversation agent: '+sessionAgentId;const sessionTitle=data.session.title||'Conversation';if(!sessionItems.some(item=>item.id===id)){sessionItems.unshift({id,title:sessionTitle,agent_id:sessionAgentId});$('sessions').prepend(new Option(sessionTitle,id));}$('sessions').value=id;sessionList.update(sessionItems,id);onEvent('session',{session_id:id});document.dispatchEvent(new Event('v3:session-open'));$('chat-messages-inner').replaceChildren();const restored=transcriptWindow.open(id,data.messages);components(data.components||[]);artifactsChip.set(data.artifacts);tasksChip.set(data.task_list);if(restored){anchor.release();transcriptWindow.land(restored);}else anchor.focus();/* Transcript rows are in the DOM now; paint them before the session's action band. */const paintChrome=()=>{if(id!==session)return;credentialView=data.app_view;chatActions.showCredential(credentialRequest(credentialView,getIdentity()),session);followups.update(data);runs(data.runs||[],true);};requestAnimationFrame(()=>requestAnimationFrame(paintChrome));},(item,{recovered=false}={})=>{if(!transcriptWindow.accept(item))return true;if(message(item)===false)return false;if(!recovered)screenAwake.attention('message');try{issues?.resolve('media_display',id);}catch(error){if(issues)issues.fail('media_display',error,id);else note('Media display unavailable: '+error.message);}voiceReply.published(item,recovered);brokerChip.published(item);if(item.role==='assistant'){void refreshGutterRuns();void actionsChip.refresh();}void stats.refresh(true).catch(error=>note(error.message));try{if(recovered)anchor.changed();else anchor.published(item);issues?.resolve('transcript_position',id);}catch(error){if(issues)issues.fail('transcript_position',error,id);else note('Transcript positioning unavailable: '+error.message);}return true;},summary=>{historyChanged(summary);/* A pushed summary updates only its row; without one, reload the list. */if(summary?.id)sessionList.patch(summary.id,summary);else void sessions().catch(error=>{if(!issues)note(error.message);});},syncSnapshot);if(session===id&&focusGeneration===sessionGeneration&&focusWatch.unchanged()&&shouldFocusComposer(focusKind))$('chat-input').focus({preventScroll:true});}catch(error){/* A conversation that failed to load must not block New. */if(session===id)historyFailed=true;throw error;}finally{focusWatch.stop();}}
+// Requests run cancellation and refreshes shell state even when the request fails.
+const STOPPED='Stopped, continue chat to resume';
+// shortcut: the count refreshes on open, Stop and run end; work that ends meanwhile leaves Stop visible until then.
+let backgroundCount=0,stoppedRun='';
+/** Reads how much background work this session still runs; failures count as none. */
+async function checkBackground(id=session){const count=await client.background(id).then(data=>data.count||0,()=>0);if(id===session){backgroundCount=count;$('chat-stop-btn').dataset.background=String(count>0);}return count;}
+/** Shows Stop for background work alone; an active run's Stop is painted by runs(). */
+function paintBackgroundStop(){const button=$('chat-stop-btn');if(button.dataset.run||button.dataset.configEnabled==='false')return;button.hidden=!backgroundCount;button.style.display=button.hidden?'none':'';}
+/** First Stop: ends the conversation's run only and reports background work left running. */
+async function cancel(id){if(sharedAccess?.can_control===false)throw Error('This conversation is read only');stoppedRun=id;progress.hold(STOPPED,id);try{await client.cancel(id,{client_request_id:keyId('cancel:'+id)});const count=await checkBackground();if(count)progress.hold('Stopped, '+count+' background process'+(count===1?'':'es')+' still active. Click Stop again for total stop',id);}finally{await refresh();}}
+/** Second Stop: ends all background work; the agent asks before restarting any of it. */
+async function stopAll(){const id=session;progress.hold(STOPPED,stoppedRun);const requestKey='session-stop:'+id+':'+Date.now();try{const result=await client.stopSession(id,{client_request_id:keyId(requestKey)});forgetKey(requestKey);if(id===session){backgroundCount=0;$('chat-stop-btn').dataset.background='false';progress.hold(totalStopNotice(result?.still_building),stoppedRun);}}finally{await refresh();}}
+/** Second-stop notice: background work stopped; a running broker task keeps building. */
+function totalStopNotice(building){const lines=['Background processes stopped'];for(const task of Array.isArray(building)?building:[])lines.push('Broker task '+(task.name||task.task_id)+' is still building');return lines.join('\n');}
+// Shows a transient card while a run retries. Failed and error-stopped runs arrive as stored
+// notice rows in transcript order; a notice whose run has moved on (retry, resume) is removed.
+function failedRunMessages(items){
+  const target=$('chat-messages-inner');
+  const retrying=run=>['queued','running'].includes(run.status)&&run.error?.startsWith('Retrying');
+  const moved=new Set(items.filter(run=>!['failed','paused','stopped'].includes(run.status)).map(run=>run.id));
+  for(const row of target.querySelectorAll('[data-notice-run-id]'))if(moved.has(row.dataset.noticeRunId))row.remove();
+  const failed=items.filter(run=>!run.uncertain&&retrying(run));
+  const ids=new Set(failed.map(run=>run.id));
+  for(const row of target.querySelectorAll('[data-failed-run-id]'))if(!ids.has(row.dataset.failedRunId))row.remove();
+  for(const run of failed){
+    let row=[...target.querySelectorAll('[data-failed-run-id]')].find(node=>node.dataset.failedRunId===run.id);
+    if(!row){
+      row=document.createElement('article');row.className='v3-message system';row.dataset.failedRunId=run.id;
+      row.append(createChatAction({title:'Run failed',message:''}));
+      const turns=[...target.children].filter(node=>node.dataset.turnId===run.id);
+      const after=turns.at(-1);
+      target.insertBefore(row,after?.nextSibling||null);
+    }
+    row.firstChild.querySelector('strong').textContent=run.error;
+    row.firstChild.querySelector('.chat-action-message').textContent='The run restarts automatically.';
+  }
+}
+/** Fans run snapshots to transport, display lease, controls, progress and activity, then paints composer and run actions. Approval, recovery, and cancel handlers call their matching client endpoints. */
+// The app-wide status list can omit this chat's runs once they end (other chats fill it), so a cached run still marked active is re-read from this chat's own snapshot.
+function refreshOwnRuns(){if(ownRunsBusy||!session)return;ownRunsBusy=true;const sid=session,epoch=sessionGeneration;client.snapshot(sid).then(data=>{if(session===sid&&sessionGeneration===epoch)runs(data.runs||[],true);}).catch(()=>{}).finally(()=>{ownRunsBusy=false;});}
+function runs(items,authoritative=false){if(!authoritative&&sharing.state&&activityRuns.length&&!items.some(run=>run.session_id===session)){items=activityRuns;if(items.some(run=>['queued','running','waiting_approval','waiting_gate','waiting_external'].includes(run.status)))refreshOwnRuns();}onEvent('runs',{session_id:session,runs:items.filter(r=>r.session_id===session||!r.session_id).map(r=>({id:r.id,status:r.status,uncertain:!!r.uncertain,approval_id:r.pending?.id||null}))});screenAwake.runs(items.filter(run=>run.session_id===session||!run.session_id));client.updateRuns(items);anchor.updateRuns(items.filter(run=>run.session_id===session||!run.session_id));progress.update(items);void stats.refresh();controls.updateRuns(items.filter(run=>run.session_id===session||!run.session_id));activityRuns=items.filter(run=>run.session_id===session||!run.session_id);rememberRuns(activityRuns);if(session)paintActivity();chatActions.beginRuns();const relevant=items.filter(run=>run.session_id===session||!run.session_id);const pendingReview=!!$('chat-messages-inner').querySelector('[data-admission-status="pending_review"],[data-admission-status="reviewing"]');const active=relevant.find(run=>['queued','running','waiting_approval','waiting_gate','waiting_external'].includes(run.status));/* The open session's run state updates its dropdown row without a list reload. */if(session&&(active||relevant[0]))sessionList.patch(session,{run_status:(active||relevant[0]).status,...(active?{run_started_at:active.created_at||null}:{})});$('chat-input-row').dataset.runStatus=active?.status||relevant[0]?.status||'Ready';if(!active&&$('chat-stop-btn').dataset.run)void checkBackground().then(paintBackgroundStop);$('chat-stop-btn').hidden=!(active||backgroundCount>0)||$('chat-stop-btn').dataset.configEnabled==='false';$('chat-stop-btn').dataset.run=active?.id||'';$('chat-stop-btn').style.display=$('chat-stop-btn').hidden?'none':'';$('chat-send').disabled=historyBusy||sharedAccess?.can_send===false||!!getState().shutoff||submitting||!!media?.uploading;
+$('chat-input').readOnly=sharedAccess?.can_send===false||!!media?.dictating;
+$('chat-stop-btn').disabled=sharedAccess?.can_control===false;
+failedRunMessages(relevant);
+// Uncertain work needs recovery first; a Continue would only queue behind it.
+const unresolved=relevant.some(run=>run.uncertain||run.status==='recovery');
+const continuing=!pendingReview&&!active&&!unresolved&&!media?.count&&!$('chat-input').value.trim()&&$('chat-continue-btn').dataset.configEnabled!=='false';
+$('chat-continue-btn').hidden=!continuing;$('chat-continue-btn').style.display=continuing?'':'none';
+$('chat-continue-btn').disabled=sharedAccess?.can_send===false||sharing.state?.participation?.active===false||!!getState().shutoff||submitting;
+// Context reports live in the composer panel and each bubble's More menu.
+// Ordinary active runs use the progress control and composer Stop button.
+// Approval and recovery cards retain their explicit decisions.
+for(const run of relevant){
+  if(run.pending&&run.status==='waiting_approval'&&run.pending.id&&run.pending.can_decide!==false&&!sharedAccess?.observer){
+    const p=run.pending;
+    chatActions.showTool({approval:p,run,active,expanded:expandedApprovals,decide:async(decision,extra={})=>{
+      await client.decide(p.id,{decision,...extra,client_request_id:keyId('approval:'+p.id+':'+decision+':'+JSON.stringify(extra))});
+      if(p.messaging_binding)void messagingRoutes.refresh().catch(error=>note(error.message));await refresh();
+    },cancel:()=>cancel(run.id)});
+    continue;
+  }
+  chatActions.showRun({run,active,canControl:sharedAccess?.can_control!==false,expanded:expandedRecovery,renderRecovery:createRecoveryDetails,
+    cancel:()=>cancel(run.id),
+    recover:async(decision,output,call_id)=>{await client.recover(run.id,{decision,output,...(call_id?{call_id}:{}),client_request_id:keyId('recovery:'+run.id+':'+(call_id||'')+':'+decision+':'+output)});await refresh();}
+  });
+}
+// Remove cards whose run or approval was not shown in this refresh; unchanged cards keep their nodes.
+chatActions.endRuns();}
+
+$('sessions').onchange=guard(()=>open($('sessions').value));
+/** Deduplicates session creation and rejects completion if the user changed sessions mid-request. */
+async function ensureSession(){
+  if(session)return session;
+  if(creatingSession)return creatingSession;
+  const epoch=sessionGeneration;
+  creatingSession=(async()=>{
+    const focusWatch=watchFocus();
+    try {
+      if(!privacyMode)await loadAgentPrivacy();
+      if(!privacyMode)throw Error('Conversation privacy unavailable; retry before sending.');
+      const requestKey='session:'+getAgentId();
+      const item=await client.create({agent_id:getAgentId(),client_request_id:keyId(requestKey),expected_conversation_privacy:privacyMode});
+      forgetKey(requestKey);
+      if(epoch!==sessionGeneration)throw Error('Conversation changed; repeat the action in the selected conversation.');
+      await sessions();
+      if(epoch!==sessionGeneration)throw Error('Conversation changed; repeat the action.');
+      await open(item.id,'push','new_session',focusWatch);return item.id;
+    } finally {focusWatch.stop();}
+  })().finally(()=>{creatingSession=null;});
+  return creatingSession;
+}
+// One New-session request at a time; an unused open conversation is reused instead of duplicated.
+let newSessionBusy=false;
+/** Collects the selected conversation's content needed to decide whether New should start another. */
+const newSessionState=()=>({session,ready:historyReady,failed:historyFailed,lastSeq:historyLastSeq,runs:activityRuns.length,rows:$('chat-messages-inner').children.length,draft:$('chat-input').value,attachments:media?.count||0});
+// Creates a fresh session from the New control and restores the initiating focus choice.
+$('new').onclick=guard(async()=>{
+  if(newSessionBusy)return;
+  if(!shouldCreateSession(newSessionState())){$('chat-input').focus({preventScroll:true});return;}
+  const focusWatch=watchFocus();
+  newSessionBusy=true;
+  try{
+    const item=await client.create({agent_id:getAgentId(),client_request_id:crypto.randomUUID()});
+    await sessions();
+    await open(item.id,'push','new_session',focusWatch);
+  }finally{newSessionBusy=false;focusWatch.stop();}
+});
+let elementContext='';
+// Network errors, timeouts, rate limits and 5xx are retried with the same client_message_id;
+// the server replays its receipt for a repeated ID, so a retry never posts twice.
+const transientSend=error=>!error.status||error.status===408||error.status===429||error.status>=500;
+async function sendWithRetry(send){
+  for(let attempt=0;;attempt++){
+    try{return await send();}
+    catch(error){if(attempt>=4||!transientSend(error))throw error;progress.note('Connection problem — retrying…');await new Promise(resolve=>setTimeout(resolve,1000*2**attempt));}
+  }
+}
+/** Sends a reply panel's answer; the server checks it against the panel, builds the message text and records the answer with the message. */
+async function answerPanel(id,answer,revision){
+  if(historyBusy||submitting||getState().shutoff)throw Error('Chat is busy or execution is disabled');
+  const sid=session;if(!sid)throw Error('Conversation unavailable; answer was not sent.');
+  progress.note('Sending…');submitting=true;
+  try{
+    const ids=media.snapshot(sid),requestKey='panel:'+sid+':'+id+':'+revision+':'+JSON.stringify(answer)+':'+ids.join(',');
+    const sent=await sendWithRetry(()=>client.answerComponent(sid,id,{answer,revision,client_message_id:keyId(requestKey),attachment_ids:ids}));
+    forgetKey(requestKey);media.committed(sid,ids);
+    if(sid===session){progress.note(sent?.submission_id?'Message queued':sent?.run_id?'Message sent':'Answer recorded');syncSnapshot(await client.snapshot(sid));}
+  }finally{submitting=false;await refresh();}
+}
+/** "/compact [focus]": folds earlier context now, keeping the agent's recent tail; nothing is sent to the agent. */
+async function compactCommand(focus){
+  const sid=session;if(!sid){note('Nothing to compact yet.');return;}
+  progress.note('Compacting…');
+  const result=await client.compact(sid,{focus,client_request_id:'compact-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10)});
+  progress.note(result?.status==='nothing_to_fold'?result.notice:result?.status==='scheduled'?'Compaction starts at the next step':'Compacting earlier context…');
+  if(result?.status==='nothing_to_fold')note(result.notice);
+  $('chat-input').value='';saveDraft(sid,'');
+  if(sid===session)syncSnapshot(await client.snapshot(sid));
+  await refresh();
+}
+/** Submits text plus staged attachments/page context, preserving draft and session identity across awaits. */
+async function submit(text,clearInput=false,{componentId=''}={}){
+  // An empty draft with no attachments is ignored: no notice, no request, draft left in place.
+  if(!text&&!media.count)return;
+  if(historyBusy||submitting||getState().shutoff||$('chat-send').disabled)throw Error('Chat is busy or execution is disabled');
+  const origin=session,epoch=sessionGeneration,draft=$('chat-input').value;
+  progress.note('Sending…');submitting=true;$('chat-send').disabled=true;$('chat-continue-btn').disabled=true;
+  try{
+    if(!session){await loadAgentPrivacy();if(!privacyMode)throw Error('Conversation privacy unavailable; message was not sent.');}
+    const sid=await ensureSession();
+    if((origin&&origin!==session)||(epoch!==sessionGeneration&&session!==sid))throw Error('Conversation changed; message was not sent.');
+    const ids=media.snapshot(sid),content=text+(elementContext?'\n\n[Untrusted page context selected by user]\n'+elementContext:'');
+    const requestKey='message:'+sid+':'+content+':'+ids.join(',');
+    const sent=await sendWithRetry(()=>sharedAccess?.operator_reply
+      ? request('/sessions/'+encodeURIComponent(sid)+'/operator-replies','POST',{text:content,attachment_ids:ids,client_message_id:keyId(requestKey)})
+      : client.send(sid,{text:content,attachment_ids:ids,client_message_id:keyId(requestKey),...(componentId?{component_id:componentId}:{})}));
+    if(sid===session){
+      progress.note(sent.stopped_run?'Stopped':sent.submission_id?'Message queued':sent.review_id?'Awaiting manager review…':'Message sent');
+      const data=await client.snapshot(sid);
+      if(sid===session)syncSnapshot(data);
+    }
+    forgetKey(requestKey);media.committed(sid,ids);chatActions.clearSendError();
+    if(clearInput&&readDraft(sid)===draft)saveDraft(sid,'');
+    if(clearInput&&sid===session&&$('chat-input').value===draft)$('chat-input').value='';
+    applyChatConfig();await refresh();
+    // A sent message ends typing mode: drop the composer's focus so the mobile keyboard closes with
+    // it and the next tap starts a fresh draft. Only on success, and never over another control.
+    if(document.activeElement===$('chat-input'))$('chat-input').blur();
+    onEvent('sent',{session_id:sid});return {session_id:sid};
+  }catch(error){
+    // Fallback after automatic retries: the draft stays in the composer and Retry resubmits it.
+    chatActions.showSendError({message:error.message||'Message was not sent.',retry:()=>submit(text,clearInput,{componentId})});
+    throw error;
+  }finally{submitting=false;await refresh();void loadAllowance();}
+}
+// Sends the current composer draft on form submission; submit ignores an empty draft.
+// A host that supports sign-in handles "/login" itself; it is never sent to the agent.
+// "/compact [focus]" folds earlier context through its own endpoint; it is never sent as a message.
+$('composer').onsubmit=guard(()=>{const text=$('chat-input').value.trim();if(onLogin&&text.toLowerCase()==='/login'){$('chat-input').value='';saveDraft(session,'');return onLogin();}const compact=/^\/compact(?:\s+(.*))?$/is.exec(text);if(compact&&!media.count)return compactCommand((compact[1]||'').trim());return submit(text,true);});
+// Continue is a new user turn, not an automatic retry of an exhausted run.
+$('chat-continue-btn').onclick=guard(()=>submit('Continue'));
+// Enter behavior follows chat_common.composer.enter_behavior; touch devices are detected once per adoption.
+const touchComposer=matchMedia('(pointer: coarse)');
+let enterBehavior=resolveEnterBehavior(currentChatProfile());
+/** Re-reads the configured Enter policy and mirrors it on the mobile action key. */
+function syncEnterBehavior(){enterBehavior=resolveEnterBehavior(currentChatProfile());$('chat-input').setAttribute('enterkeyhint',enterBehavior==='send'?'send':'enter');}
+syncEnterBehavior();
+const onChatConfigApplied=()=>syncEnterBehavior();
+document.addEventListener('v3:chat-config-applied',onChatConfigApplied);
+// Enter inserts a newline by default; Shift+Enter always newlines and Ctrl/Cmd+Enter always sends.
+// Every edit, including programmatic input events, saves the selected session's draft.
+$('chat-input').oninput=()=>saveDraft(session,$('chat-input').value);
+$('chat-input').value=readDraft('');
+$('chat-input').onkeydown=event=>{if(!enterSubmits(event,enterBehavior,touchComposer.matches))return;event.preventDefault();if(!$('chat-send').disabled)$('composer').requestSubmit();};
+// Stops the run currently identified on the stop control.
+$('chat-stop-btn').onclick=guard(()=>$('chat-stop-btn').dataset.run?cancel($('chat-stop-btn').dataset.run):stopAll());
+
+  /** Clears session visuals and disconnects every session-scoped transport/control. */
+  function disconnect(){issues?.select('');brokerChip.disconnect();artifactsChip.disconnect();tasksChip.disconnect();actionsChip.disconnect();messagingRoutes.disconnect();screenAwake.select('');followups.reset();session='';activityRuns=[];elementContext='';anchor.reset();progress.reset();chatActions.clearRuns();chatActions.clearSendError();closeGutterOverlays();gutterRuns.clear();stats.disconnect();media.disconnect();controls.disconnect();sharing.disconnect();activity.disconnect();closeChatElementFullView();window.speechSynthesis?.cancel();client.disconnect();}
+  /** Disconnects and disposes panel-owned timers, observers, listeners, and mounted child controls. */
+  function destroy(){
+    mainNotes?.destroy();disposeFeedback();screenAwake.destroy();++sessionGeneration;closeUndoDialog?.();
+    disconnect();followups.destroy();chatActions.destroy();anchor.destroy();transcriptWindow.destroy();uiTrace.then(dispose=>dispose());disposeFooterGestures();disposeHeaderGestures();disposeZoom();progress.destroy();clearInterval(gutterClock);clearInterval(reviewTimer);idlePause.destroy();pausedBar.remove();stats.destroy();media.destroy();voiceReply.destroy();controls.destroy();sharing.destroy();sessionList.destroy();dropdown.destroy();panelAbort.abort();chatClearanceObserver.disconnect();
+    $('sessions').onchange=null;$('new').onclick=null;$('composer').onsubmit=null;
+    document.removeEventListener('v3:chat-config-applied',onChatConfigApplied);$('chat-input').onkeydown=null;$('chat-input').oninput=null;$('chat-stop-btn').onclick=null;$('chat-continue-btn').onclick=null;
+  }
+  /** Creates and opens a new conversation, rejecting while a message or upload is pending. */
+  async function newSession(){
+    if(submitting||media.uploading)throw Error('Wait for the pending message or upload');
+    if(newSessionBusy||!shouldCreateSession(newSessionState()))return {session_id:session};
+    newSessionBusy=true;
+    try{
+      const item=await client.create({agent_id:getAgentId(),client_request_id:crypto.randomUUID()});
+      await sessions();await open(item.id);return {session_id:item.id};
+    }finally{newSessionBusy=false;}
+  }
+  /** Returns a run from the selected conversation or throws when it is absent. */
+  function selectedRun(id){const run=activityRuns.find(r=>r.id===id);if(!run)throw Error('Run is not in the selected conversation');return run;}
+  const panel = {open, sessions, runs, disconnect, destroy, newSession,
+    /** Reads the panel's current session ID. */
+    get sessionId(){return session;},
+    /** Focuses and opens the conversation selector. */
+    showSessions(){$('session-dropdown-trigger').focus({preventScroll:true});return dropdown.open();},
+    /** Stores user-selected page context up to 2,000 characters; rejects larger or non-string values. */
+    setElementContext(text){if(typeof text!=='string'||text.length>2000)throw Error('Invalid page context');elementContext=text;},
+    /** Sets the composer draft and reapplies the configured layout; rejects non-text input. */
+    setDraft(text){if(typeof text!=='string')throw Error('Draft must be text');$('chat-input').value=text;saveDraft(session,text);applyChatConfig();},
+    /** Sets and submits a programmatic text draft; call with this bound to the returned panel. */
+    async send(text){if(typeof text!=='string')throw Error('Message must be text');this.setDraft(text);return submit(text.trim(),true);},
+    /** Starts a new Continue user turn. */
+    continue:()=>submit('Continue'),
+    /** Cancels the selected run by ID or the first active run; throws if none is active. */
+    async stop(id){const run=id?selectedRun(id):activityRuns.find(r=>!r.parked&&['queued','running','waiting_approval','waiting_gate','waiting_external'].includes(r.status));if(!run)throw Error('No active run');await cancel(run.id);},
+    /** Decides an approval only when it is pending in this conversation, then refreshes shell state. */
+    async approve(id,decision){const run=activityRuns.find(r=>r.pending?.id===id&&r.status==='waiting_approval');if(!run||run.pending.can_decide===false||sharedAccess?.observer)throw Error('Approval is not available to this user');await client.decide(id,{decision,client_request_id:keyId('approval:'+id+':'+decision)});await refresh();},
+    /** Resolves a selected uncertain/recovery run and refreshes shell state. */
+    async recover(id,decision,output){if(sharedAccess?.can_control===false)throw Error('This conversation is read only');const run=selectedRun(id);if(!run.uncertain&&run.status!=='recovery')throw Error('Run is not waiting for recovery');await client.recover(id,{decision,output,client_request_id:keyId('recovery:'+id+':'+decision+':'+output)});await refresh();}
+  };
+  // One capture owner also covers chat portals and the shell Chat/Float buttons.
+  const disposeFeedback=mountChatControlFeedback(root,{portals:true,shell:true});
+  await loadAgentPrivacy();void loadAllowance();
+  mountedPanels.set(root, panel);
+  return panel;
+}

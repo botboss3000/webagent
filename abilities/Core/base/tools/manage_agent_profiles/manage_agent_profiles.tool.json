@@ -1,0 +1,51 @@
+{
+  "name": "manage_agent_profiles",
+  "description": "List, read, save, remove or apply caller-private identity presets for an agent.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "enum": [
+          "list",
+          "read",
+          "save",
+          "remove",
+          "apply"
+        ],
+        "type": "string"
+      },
+      "agent_id": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "agent_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "description": {
+        "maxLength": 2000,
+        "type": "string"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "name": {
+        "maxLength": 200,
+        "type": "string"
+      },
+      "profile_id": {
+        "maxLength": 64,
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval"
+  }
+}

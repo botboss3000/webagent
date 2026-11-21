@@ -1,0 +1,30 @@
+{
+  "name": "register_webhook",
+  "description": "Create a private JSON webhook inbox tied to this conversation.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expires_at": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_entries": {
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "name": {
+        "maxLength": 120,
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval"
+  }
+}

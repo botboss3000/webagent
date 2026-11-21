@@ -1,0 +1,15 @@
+{
+  "name": "ssh_poll_job",
+  "description": "Ssh poll job (ssh_control ability). Not yet implemented.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "log",
+    "tail_lines": 40
+  }
+}

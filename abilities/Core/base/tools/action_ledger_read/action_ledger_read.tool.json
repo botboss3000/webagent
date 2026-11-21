@@ -1,0 +1,34 @@
+{
+  "name": "action_ledger_read",
+  "description": "Read the action ledger: your recorded protected actions and their status; action_id also returns that action's saved result",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action_id": {
+        "maxLength": 128,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "did that protected action go through",
+      "check the saved result of an action"
+    ],
+    "keywords": [
+      "action ledger",
+      "action status"
+    ]
+  },
+  "effect": "read",
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

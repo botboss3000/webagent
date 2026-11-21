@@ -1,0 +1,50 @@
+{
+  "name": "knowledge_file_save",
+  "description": "Staff only: create or replace a text or Markdown knowledge file.",
+  "effect": "write",
+  "retention": {
+    "drop_input_fields": [
+      "content"
+    ]
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "file_id": {
+        "maxLength": 64,
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 120,
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "content",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "add a knowledge file",
+      "update the FAQ document"
+    ],
+    "keywords": [
+      "save knowledge"
+    ]
+  }
+}

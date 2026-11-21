@@ -1,0 +1,37 @@
+/* Resource readings are neutral; red retains unavailable and unfinished states. */
+/* Responsive pending dashboard tiles; sizes read from cards.json by page.js */
+.v3-dashboard { --dashboard-danger:var(--danger,#ef4444); min-width:0; }
+.v3-dashboard .dashboard-toolbar,.v3-dashboard .dashboard-tile-actions { display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px; }
+.v3-dashboard button,.v3-dashboard select { -webkit-tap-highlight-color:transparent;border:1px solid var(--border,#888);border-radius:8px;background:var(--bg-elev,transparent);color:inherit;padding:7px 10px; }
+.v3-dashboard button:enabled:hover { border-color:var(--fg-1,currentColor); }
+.v3-dashboard button:focus-visible { outline:2px solid currentColor;outline-offset:2px; }
+.v3-dashboard button[aria-pressed="true"] { border-color:var(--brand,currentColor); }
+.v3-dashboard button:disabled,.v3-dashboard select:disabled { opacity:.55; }
+.v3-dashboard .dashboard-grid { display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;align-items:start; }
+.v3-dashboard .dashboard-tile { grid-column:span var(--tile-span,4);min-width:0;padding:14px;border:1px solid var(--dashboard-danger);border-radius:12px;background:color-mix(in srgb,var(--dashboard-danger) 8%,var(--bg-elev,transparent));color:var(--dashboard-danger); }
+.v3-dashboard .dashboard-tile h3 { margin:0 0 8px;font-size:15px; }
+.v3-dashboard .dashboard-pending { font-size:12px;font-weight:700;margin:4px 0 12px; }
+.v3-dashboard .dashboard-needs { font-size:12px;overflow-wrap:anywhere; }
+.v3-dashboard .dashboard-value { font-size:32px;min-height:64px; }
+.v3-dashboard .dashboard-field { display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid color-mix(in srgb,var(--dashboard-danger) 20%,transparent); }
+.v3-dashboard .dashboard-chart-empty { min-height:130px;border-left:1px solid currentColor;border-bottom:1px solid currentColor;display:grid;place-items:center;margin:12px; }
+.v3-dashboard .dashboard-picker { padding:12px;margin-bottom:12px;border:1px solid var(--border,#888);border-radius:10px; }
+.v3-dashboard .dashboard-picker button { margin:4px; }
+@media(max-width:900px){.v3-dashboard .dashboard-tile{grid-column:span 6;}}
+@media(max-width:560px){.v3-dashboard .dashboard-grid{grid-template-columns:minmax(0,1fr);}.v3-dashboard .dashboard-tile{grid-column:1;}.v3-dashboard .dashboard-toolbar{align-items:stretch;}}
+
+.v3-dashboard .dashboard-tile[data-state="live"] { color:var(--fg-1,inherit);border-color:var(--border,#888);background:var(--bg-elev,transparent); }
+.v3-dashboard .dashboard-tile[data-state="partial"] .dashboard-field[data-available="true"] { color:var(--fg-1,CanvasText); }
+.v3-dashboard .dashboard-field span:last-child { text-align:right;overflow-wrap:anywhere; }
+
+.v3-dashboard .dashboard-preview a { display:inline-block;margin-top:10px;color:inherit;-webkit-tap-highlight-color:transparent; }
+.v3-dashboard .dashboard-preview a:focus-visible { outline:2px solid currentColor;outline-offset:2px; }
+.v3-dashboard .dashboard-field span { min-width:0;overflow-wrap:anywhere; }
+
+.v3-dashboard .dashboard-history { display:block;width:100%;height:auto;min-height:100px;border-bottom:1px solid var(--border,#888); }
+.v3-dashboard .dashboard-scope { font-size:12px;overflow-wrap:anywhere; }
+.v3-dashboard .dashboard-tile[data-state="warming"] { color:var(--fg-1,inherit);border-color:var(--border,#888);background:var(--bg-elev,transparent); }
+.v3-dashboard .dashboard-tile[data-state="loading"] { color:var(--fg-1,inherit);border-color:var(--border,#888);background:var(--bg-elev,transparent); }
+.v3-dashboard .dashboard-tile[data-state="loading"] .dashboard-pending::before { content:"";display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:-2px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:dashboard-spin .8s linear infinite; }
+@keyframes dashboard-spin { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce){.v3-dashboard .dashboard-tile[data-state="loading"] .dashboard-pending::before{animation-duration:2.4s;}}

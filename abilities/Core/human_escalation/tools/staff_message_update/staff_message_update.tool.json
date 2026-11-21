@@ -1,0 +1,50 @@
+{
+  "name": "staff_message_update",
+  "description": "Staff only. Change a visitor message's status and optionally add a note, using the message's current revision.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expected_revision": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "message_id": {
+        "maxLength": 64,
+        "type": "string"
+      },
+      "note": {
+        "maxLength": 1000,
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "new",
+          "contacted",
+          "resolved",
+          "closed"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "message_id",
+      "status",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "mark a visitor message as handled"
+    ],
+    "keywords": [
+      "message status"
+    ]
+  }
+}

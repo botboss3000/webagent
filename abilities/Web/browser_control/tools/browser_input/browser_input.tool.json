@@ -1,0 +1,184 @@
+{
+  "name": "browser_input",
+  "description": "Click, type or press a key in the private server browser, scroll it with the wheel, pinch or hover, or save the site's sign-in.",
+  "effect": "write",
+  "retention": {
+    "output": "log",
+    "keep_fields": [
+      "target",
+      "artifacts"
+    ]
+  },
+  "repeat_guard": {
+    "risk": "none",
+    "hint": "read the page again to see whether the earlier click or typing already took effect; every input needs its own fresh read, so input cannot repeat blindly"
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "click",
+          "type",
+          "press",
+          "touch",
+          "wheel",
+          "pinch",
+          "hover",
+          "save_login",
+          "script"
+        ]
+      },
+      "selector": {
+        "type": "string",
+        "description": "The target; it must lie inside the region your last browser_read read covered. press: optional, defaults to the focused element; touch, wheel, pinch and hover: required, the element whose centre is touched, scrolled over, pinched or hovered"
+      },
+      "text": {
+        "type": "string",
+        "description": "type only: literal text to type; for passwords and codes use vault instead"
+      },
+      "vault": {
+        "type": "string",
+        "description": "type only: the name of the user's vault entry to type, instead of text. Only into a sign-in field (user name, email, password or one-time code) on the entry's own https site; you never see the value"
+      },
+      "totp": {
+        "type": "boolean",
+        "description": "type with vault only: the entry is an authenticator secret; type its current 6-digit code"
+      },
+      "key": {
+        "type": "string",
+        "enum": [
+          "Tab",
+          "Shift+Tab",
+          "Enter",
+          "Escape",
+          "Space",
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "Home",
+          "End",
+          "PageUp",
+          "PageDown"
+        ],
+        "description": "press only: sent to selector, or to the focused element"
+      },
+      "dx": {
+        "type": "integer",
+        "minimum": -2000,
+        "maximum": 2000,
+        "description": "touch, wheel or pinch only: touch drags this many pixels horizontally after touching (negative is left); wheel scrolls this far horizontally (negative is left); pinch is how far each of the two fingers travels outward (positive spreads and zooms in). Omit dx and dy for a tap"
+      },
+      "dy": {
+        "type": "integer",
+        "minimum": -2000,
+        "maximum": 2000,
+        "description": "touch, wheel or pinch only: vertical travel in pixels (negative is up or scroll up)"
+      },
+      "origin": {
+        "type": "string",
+        "description": "save_login only: the https origin of the site the browser is signed in to, for example https://example.com"
+      },
+      "steps": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "description": "a browser_read action (navigate, read, wait_for, scroll, ...) or click, type, press, touch, wheel, pinch, hover"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "wait_for only: give up after this long (default 5000)"
+            },
+            "quiet_ms": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 3000,
+              "description": "wait_for quiet/network_idle: how long it must stay still (default 500)"
+            },
+            "dx": {
+              "type": "integer",
+              "minimum": -20000,
+              "maximum": 20000,
+              "description": "scroll, touch, wheel or pinch: horizontal pixels"
+            },
+            "dy": {
+              "type": "integer",
+              "minimum": -20000,
+              "maximum": 20000,
+              "description": "scroll, touch, wheel or pinch: vertical pixels"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "read: character offset; measure: element offset. Use next_offset from the previous result",
+              "maximum": 1000000
+            },
+            "points": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1599
+                  },
+                  "y": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1199
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "additionalProperties": false
+              },
+              "description": "pixels only: viewport points in CSS px"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        "description": "script only: up to 20 steps run in order in one call and approved once. Each step is an object with a browser_read action (navigate, read, wait_for, viewport, screenshot, ...) or click/type/press/touch/wheel/pinch/hover and their fields. Add \"screenshot\": true to a step to get an image after it; no other step returns one. A failed step stops the script and returns a screenshot of that moment. A step's \"label\" names its screenshot in the chat."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "click a button on the page",
+      "type into the search box",
+      "fill in a web form"
+    ],
+    "keywords": [
+      "click",
+      "type",
+      "form",
+      "scroll",
+      "hover",
+      "pinch",
+      "zoom"
+    ]
+  }
+}

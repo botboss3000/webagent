@@ -1,0 +1,46 @@
+{
+  "name": "mcp_call_tool",
+  "description": "Call an explicitly permitted remote MCP tool. May modify external systems; never replay uncertain effects",
+  "strict": false,
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "type": "string",
+        "maxLength": 80
+      },
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "tool": {
+        "type": "string",
+        "maxLength": 128
+      },
+      "arguments": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "connection_id",
+      "expected_revision",
+      "tool",
+      "arguments"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "call a tool on the MCP server"
+    ],
+    "keywords": [
+      "mcp tool"
+    ]
+  }
+}

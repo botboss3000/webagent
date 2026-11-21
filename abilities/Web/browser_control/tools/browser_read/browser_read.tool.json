@@ -1,0 +1,209 @@
+{
+  "name": "browser_read",
+  "description": "Look at web pages in a private server browser: navigate, read text, measure, scroll, emulate, screenshot.",
+  "effect": "read",
+  "retention": {
+    "output": "log",
+    "keep_fields": [
+      "url",
+      "artifacts",
+      "checks"
+    ]
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "navigate",
+          "read",
+          "measure",
+          "pixels",
+          "performance",
+          "wait_for",
+          "delay",
+          "mutations",
+          "animations",
+          "scroll",
+          "viewport",
+          "keyboard",
+          "emulate",
+          "screenshot",
+          "close",
+          "script"
+        ]
+      },
+      "url": {
+        "type": "string",
+        "description": "navigate only: a full http or https URL. A WebAgent app URL opens signed in as the current user, when sign-in is turned on, and only on allowed pages; it returns once the app has booted"
+      },
+      "signed_in": {
+        "type": "boolean",
+        "description": "navigate only: false opens the WebAgent app signed out (default true)"
+      },
+      "selector": {
+        "type": "string",
+        "description": "CSS selector. read/measure/animations/wait_for: every match; wait_for quiet and mutations watch only changes inside the matches. scroll: element to bring into view or whose scroll container to scroll. pixels: sample the centre of the first rendered match"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "read: character offset; measure: element offset. Use next_offset from the previous result",
+        "maximum": 1000000
+      },
+      "condition": {
+        "type": "string",
+        "enum": [
+          "visible",
+          "hidden",
+          "text",
+          "quiet",
+          "animations_done",
+          "network_idle"
+        ],
+        "description": "wait_for only: visible/hidden need selector; text needs text; quiet waits until the page stops changing for quiet_ms; animations_done ignores endless animations; network_idle waits until no request finished for quiet_ms"
+      },
+      "text": {
+        "type": "string",
+        "description": "wait_for condition text only: the text to wait for"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000,
+        "description": "wait_for only: give up after this long (default 5000)"
+      },
+      "quiet_ms": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000,
+        "description": "wait_for quiet/network_idle: how long it must stay still (default 500)"
+      },
+      "duration_ms": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000,
+        "description": "mutations only: how long to watch for DOM changes (default 3000)"
+      },
+      "ms": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10000,
+        "description": "delay only: how long to wait before the next step (default 300)"
+      },
+      "dx": {
+        "type": "integer",
+        "minimum": -20000,
+        "maximum": 20000,
+        "description": "scroll only: horizontal pixels"
+      },
+      "dy": {
+        "type": "integer",
+        "minimum": -20000,
+        "maximum": 20000,
+        "description": "scroll only: vertical pixels"
+      },
+      "preset": {
+        "type": "string",
+        "enum": [
+          "phone",
+          "phone_small",
+          "tablet",
+          "desktop",
+          "desktop_wide"
+        ],
+        "description": "viewport only: phone 390x844, phone_small 360x640 and tablet 768x1024 emulate touch devices; desktop 1280x900, desktop_wide 1440x900; navigate again afterwards"
+      },
+      "height": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 600,
+        "description": "keyboard only: emulated on-screen keyboard height in px (0 closes it); the touch viewport shrinks by this much from the bottom"
+      },
+      "color_scheme": {
+        "type": "string",
+        "enum": [
+          "light",
+          "dark",
+          "default"
+        ],
+        "description": "emulate only: prefers-color-scheme"
+      },
+      "reduced_motion": {
+        "type": "string",
+        "enum": [
+          "reduce",
+          "default"
+        ],
+        "description": "emulate only: prefers-reduced-motion"
+      },
+      "styles": {
+        "type": "boolean",
+        "description": "measure only: include computed CSS for each element, touch-action included (5 elements per call)"
+      },
+      "points": {
+        "type": "array",
+        "maxItems": 20,
+        "items": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1599
+            },
+            "y": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1199
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        "description": "pixels only: viewport points in CSS px"
+      },
+      "steps": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {
+          "type": "object"
+        },
+        "description": "script only: up to 20 read steps run in order in one call, each an object with this tool's fields (action, selector, url, preset, condition, ...). Add \"screenshot\": true to a step to get an image after it; no other step returns one. A failed step stops the script and returns a screenshot of that moment. Click, type and press steps are refused here; send input steps in a `browser_input` script."
+      },
+      "label": {
+        "type": "string",
+        "maxLength": 80,
+        "description": "screenshot (or a script step with \"screenshot\": true): a short name shown under the image in the chat, for example \"Option A · step rail · phone\". Always label screenshots the user will compare."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "open a web page",
+      "take a screenshot of the page",
+      "check how the page looks on mobile",
+      "read text on a website"
+    ],
+    "keywords": [
+      "browser",
+      "screenshot",
+      "web page",
+      "navigate"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "mcp_list_connections",
+  "description": "List this agent's enabled MCP connections and their revision",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "list my MCP connections"
+    ],
+    "keywords": [
+      "mcp connections"
+    ]
+  }
+}

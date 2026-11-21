@@ -1,0 +1,2261 @@
+//! Session metadata stays in the user-owned AEAD document, not plaintext columns.
+//! V2 reference: sessions.title/pinned/status/created_at and durable read markers.
+//! V3 uses a sequence cursor instead of a wall-clock read marker. Activity is
+//! distinct from metadata edits; public chat publication owns timestamp updates.
+use super::*;
+
+pub(super) use webagent_chat::session::with_session_metadata;
+use webagent_chat::session::MIGRATION_KEY;
+pub use webagent_chat::session::{
+    ArchivedSession, SessionLifecycle, SessionMetadata, SessionPatch, SessionPatchOutcome,
+    SessionStatus,
+};
+
+/// Which sessions a permanent deletion accepts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Erase {
+    /// The user deletes one archived, non-Main Chat session.
+    Archived,
+    /// The owner deletes the session's agent.
+    AgentDeletion,
+}
+
+/// Chat repositories receive the Store codec; user-plane writes keep the owner's
+/// administrator-plaintext policy while `seal` always encrypts.
+impl webagent_chat::RecordCodec for Store {
+    fn seal(&self, value: &Value) -> Result<Vec<u8>> {
+        StoreCore::seal(self, value)
+    }
+    fn unseal(&self, value: &[u8]) -> Result<Value> {
+        StoreCore::unseal(self, value)
+    }
+    fn encode_user_record(&self, value: &Value) -> Result<Vec<u8>> {
+        StoreCore::encode_user_record(self, value)
+    }
+}
+
+impl Store {
+    /// Called only after a newly inserted public chat row, in its transaction.
+    pub(super) async fn touch_session_activity(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sid: &str,
+    ) -> Result<()> {
+        webagent_chat::session::touch_session_activity(self, tx, sid).await
+    }
+
+    /// Read one session's public metadata.
+    pub async fn session_read_summary(&self, sid: &str) -> Result<Value> {
+        let mut tx = self.pool.begin().await?;
+        let raw: Vec<u8> = sqlx::query_scalar("SELECT value FROM docs WHERE key=?")
+            .bind(format!("session:{sid}"))
+            .fetch_one(&mut *tx)
+            .await?;
+        let session = self.unseal(&raw)?;
+        let result = self.summary_in(&session)?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// The public summary of one session document.
+    pub(super) fn summary_in(&self, session: &Value) -> Result<Value> {
+        webagent_chat::session::public_session(session)
+    }
+
+    /// List active public sessions using the canonical pin/activity ordering.
+    pub async fn ordered_sessions(&self) -> Result<Vec<Value>> {
+        self.ordered_sessions_status(false).await
+    }
+
+    /// Project active or archived public sessions and order pins, activity and identities deterministically.
+    pub async fn ordered_sessions_status(&self, archived: bool) -> Result<Vec<Value>> {
+        webagent_chat::session::ordered_sessions_status(&self.pool, self, archived).await
+    }
+
+    /// Project the sessions a person should see: Main Chat, every archived session and
+    /// each active conversation with a public message. An untouched new conversation is
+    /// a draft, not an active list row.
+    pub async fn ordered_visible_sessions_status(&self, archived: bool) -> Result<Vec<Value>> {
+        let mut visible = Vec::new();
+        for summary in self.ordered_sessions_status(archived).await? {
+            let Some(sid) = summary["id"].as_str() else {
+                continue;
+            };
+            if archived || summary["main_chat"] == true || self.session_has_content(sid).await? {
+                visible.push(summary);
+            }
+        }
+        Ok(visible)
+    }
+
+    /// Whether a session holds a public user or assistant message.
+    pub(crate) async fn session_has_content(&self, sid: &str) -> Result<bool> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM chat WHERE session_id=? AND role IN ('user','assistant'))",
+        )
+        .bind(sid)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists == 1)
+    }
+
+    /// A session's first public user message and when it was sent. For a spawned sub-agent
+    /// this is the prompt the parent started it with.
+    pub(crate) async fn first_user_message(&self, sid: &str) -> Result<Option<(Value, i64)>> {
+        let row = sqlx::query(
+            "SELECT content,created_at FROM chat WHERE session_id=? AND role='user' ORDER BY seq LIMIT 1",
+        )
+        .bind(sid)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok((
+                self.unseal(&row.get::<Vec<u8>, _>("content"))?,
+                row.get::<i64, _>("created_at"),
+            ))
+        })
+        .transpose()
+    }
+
+    /// Newest active anonymous conversation for one agent that no message has used yet.
+    /// New reuses this draft instead of leaving another blank session behind.
+    pub async fn reusable_draft_session(&self, agent_id: &str) -> Result<Option<Value>> {
+        let mut draft: Option<Value> = None;
+        let mut newest = i64::MIN;
+        for session in self.list("session:").await? {
+            if session["status"] != "active"
+                || session["agent_id"].as_str().unwrap_or("shared_default") != agent_id
+                || session["main_chat"] == true
+                || session["module_silent"] == true
+                || session["parent_session_id"].is_string()
+                || session["auto_naming"]["stage"] != "awaiting_message"
+            {
+                continue;
+            }
+            let Some(sid) = session["id"].as_str() else {
+                continue;
+            };
+            let created = session["created_at"].as_i64().unwrap_or(0);
+            if created <= newest {
+                continue;
+            }
+            if self.session_has_content(sid).await? {
+                continue;
+            }
+            newest = created;
+            draft = Some(json!({
+                "id": sid,
+                "agent_id": agent_id,
+                "title": session["title"].as_str().unwrap_or("New chat")
+            }));
+        }
+        Ok(draft)
+    }
+
+    /// Table-only statistics from this user's public chat and recorded usage.
+    /// Pagination bounds payloads; authority is rechecked by the browser handler.
+    pub async fn session_statistics_page(
+        &self,
+        archived: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, Option<usize>)> {
+        let summaries = self.ordered_visible_sessions_status(archived).await?;
+        let end = offset.saturating_add(limit).min(summaries.len());
+        let next = (end < summaries.len()).then_some(end);
+        let mut tx = self.pool.begin().await?;
+        let mut page = Vec::new();
+        for mut summary in summaries.into_iter().skip(offset).take(limit) {
+            let sid = summary["id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Invalid session ID"))?;
+            let (count, last_seq): (i64, i64) = sqlx::query_as(
+                "SELECT COUNT(*),COALESCE(MAX(seq),0) FROM chat WHERE session_id=? AND role IN ('user','assistant')")
+                .bind(sid).fetch_one(&mut *tx).await?;
+            let raw: Option<Vec<u8>> = sqlx::query_scalar("SELECT value FROM docs WHERE key=?")
+                .bind(format!("session_usage:{sid}"))
+                .fetch_optional(&mut *tx)
+                .await?;
+            let usage = match raw {
+                Some(raw) => crate::usage::public(&self.unseal(&raw)?),
+                None => Value::Null,
+            };
+            summary["message_count"] = json!(count);
+            summary["last_public_seq"] = json!(last_seq);
+            summary["usage"] = usage;
+            page.push(summary);
+        }
+        tx.commit().await?;
+        Ok((page, next))
+    }
+
+    /// Reserve SQLite's writer before reading. Session, event and encrypted retry
+    /// receipt commit together; the request key is scoped to this user and session.
+    pub async fn patch_session(
+        &self,
+        sid: &str,
+        patch: &SessionPatch,
+    ) -> Result<SessionPatchOutcome> {
+        if let Err(message) = patch.validate() {
+            return Ok(SessionPatchOutcome::Invalid(message));
+        }
+        let session_key = format!("session:{sid}");
+        let receipt_key = format!("receipt:session:patch:{sid}:{}", patch.client_request_id);
+        let fingerprint = crate::digest(patch);
+        let _guard = self.context_gate.write().await;
+        // Every early return rolls back at once: a dropped transaction releases its
+        // write lock only when sqlx's queued ROLLBACK runs, and a following
+        // deferred writer cannot wait for an upgrade.
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE docs SET key=key WHERE key=?")
+            .bind(&session_key)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&receipt_key)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            let receipt = self.unseal(&raw)?;
+            if receipt["digest"] != fingerprint {
+                tx.rollback().await?;
+                return Ok(SessionPatchOutcome::Conflict(
+                    "Request identifier reused with different input",
+                ));
+            }
+            tx.commit().await?;
+            return Ok(SessionPatchOutcome::Saved(receipt["result"].clone()));
+        }
+        let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&session_key)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.rollback().await?;
+            return Ok(SessionPatchOutcome::NotFound);
+        };
+        let mut session = self.unseal(&raw)?;
+        let metadata: SessionMetadata = serde_json::from_value(session.clone())?;
+        if metadata.status != SessionStatus::Active {
+            tx.rollback().await?;
+            return Ok(SessionPatchOutcome::Conflict("Session is archived"));
+        }
+        if metadata.metadata_revision != patch.expected_revision {
+            tx.rollback().await?;
+            return Ok(SessionPatchOutcome::Conflict(
+                "Session metadata revision changed",
+            ));
+        }
+        let mut changed = false;
+        if let Some(title) = &patch.title {
+            let title = title.trim();
+            changed |= metadata.title != title;
+            if session["auto_naming"].is_object() && session["auto_naming"]["stage"] != "locked" {
+                changed = true;
+                session["auto_naming"]["stage"] = json!("locked");
+                session["auto_naming"]["claim"] = Value::Null;
+                session["auto_naming"]["lease_until"] = json!(0);
+                sqlx::query("DELETE FROM docs WHERE key=?")
+                    .bind(format!("session_naming:{sid}"))
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            session["title"] = json!(title);
+        }
+        if let Some(pinned) = patch.pinned {
+            changed |= metadata.pinned != pinned;
+            session["pinned"] = json!(pinned);
+        }
+        if let Some(dismissed) = patch.flag_dismissed {
+            if session["flag_run_id"].as_str() != patch.flag_run_id.as_deref() {
+                tx.rollback().await?;
+                return Ok(SessionPatchOutcome::Conflict("Session flag changed"));
+            }
+            changed |= (session["flag_dismissed"] == true) != dismissed;
+            session["flag_dismissed"] = json!(dismissed);
+        }
+        if changed {
+            let Some(revision) = metadata.metadata_revision.checked_add(1) else {
+                tx.rollback().await?;
+                return Ok(SessionPatchOutcome::Conflict(
+                    "Session metadata revision exhausted",
+                ));
+            };
+            session["metadata_revision"] = json!(revision);
+            self.write_document(&mut tx, &session_key, &session).await?;
+        }
+        let summary = self.summary_in(&session)?;
+        let result = json!({"session":summary});
+        sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+            .bind(&receipt_key)
+            .bind(self.encode_user_record(&json!({"digest":fingerprint,"result":result}))?)
+            .execute(&mut *tx)
+            .await?;
+        if changed {
+            sqlx::query(
+                "INSERT INTO events(session_id,kind,payload) VALUES(?, 'session_updated', ?)",
+            )
+            .bind(sid)
+            .bind(self.encode_user_record(&result)?)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.cache.lock().unwrap().invalidate(&[session_key]);
+        self.context_cache
+            .lock()
+            .unwrap()
+            .invalidate(&self.context_cache_key(sid));
+        Ok(SessionPatchOutcome::Saved(result))
+    }
+
+    /// Check under the caller's write transaction, never a cached snapshot.
+    pub(super) async fn require_active_session(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sid: &str,
+    ) -> Result<()> {
+        webagent_chat::session::require_active_session(self, tx, sid).await
+    }
+
+    /// Check the current persisted lifecycle state without trusting a cached run snapshot.
+    pub(crate) async fn session_available(&self, sid: &str) -> Result<bool> {
+        Ok(self
+            .get(&format!("session:{sid}"))
+            .await?
+            .is_some_and(|session| session["status"] == "active"))
+    }
+
+    /// Revoke all durable session work in the lifecycle writer transaction.
+    /// Increment run/task fences so old executors cannot publish after unarchive.
+    pub(super) async fn cancel_session_work(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        sid: &str,
+    ) -> Result<()> {
+        self.cancel_session_followups(tx, sid).await?;
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM run_index WHERE session_id=? AND status NOT IN ('completed','cancelled','failed')")
+            .bind(sid).fetch_all(&mut **tx).await?;
+        for id in ids {
+            let key = format!("run:{id}");
+            let raw: Vec<u8> = sqlx::query_scalar("SELECT value FROM docs WHERE key=?")
+                .bind(&key)
+                .fetch_one(&mut **tx)
+                .await?;
+            let mut run = self.decode_document(tx, &raw).await?;
+            // Retain uncertain-effect evidence; deletion never authorizes replay.
+            if run["uncertain"] == true
+                || (run["pending"]["state"] == "executing"
+                    && !crate::tools::is_read(run["pending"]["name"].as_str().unwrap_or("")))
+                || crate::parallel_batch::executing_write(&run)
+            {
+                run["uncertain"] = json!(true);
+                crate::parallel_batch::mark_uncertain_writes(&mut run);
+            }
+            run["status"] = json!("cancelled");
+            run["error"] = json!("Session not found");
+            run["run_revision"] = json!(run["run_revision"]
+                .as_u64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Run revision exhausted"))?);
+            let epoch = run["lease_epoch"]
+                .as_i64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Run lease epoch exhausted"))?;
+            run["lease_epoch"] = json!(epoch);
+            run["generation"] = json!(uuid::Uuid::new_v4().to_string());
+            self.write_document(tx, &key, &run).await?;
+            self.index_run(tx, &run).await?;
+            sqlx::query(
+                "UPDATE run_index SET lease_epoch=?,lease_owner=NULL,lease_expires_at=0 WHERE id=?",
+            )
+            .bind(epoch)
+            .bind(&id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        let rows = sqlx::query("SELECT key,value FROM docs WHERE key LIKE 'background_task:%' OR key LIKE 'manager_review:%'")
+            .fetch_all(&mut **tx).await?;
+        for row in rows {
+            let key: String = row.get("key");
+            let mut record = self.unseal(&row.get::<Vec<u8>, _>("value"))?;
+            if record["session_id"] != sid {
+                continue;
+            }
+            if key.starts_with("background_task:") {
+                if record["delivery_run_id"].is_string()
+                    || matches!(record["status"].as_str(), Some("cancelled" | "failed"))
+                {
+                    continue;
+                }
+                record["status"] = json!("cancelled");
+                let revision = record["revision"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("Background revision exhausted"))?;
+                record["revision"] = json!(revision);
+                record["lease_until"] = json!(0);
+                record["claim_id"] = Value::Null;
+                sqlx::query(
+                    "UPDATE background_task_index SET status='cancelled',revision=? WHERE id=?",
+                )
+                .bind(revision)
+                .bind(record["id"].as_str().unwrap_or(""))
+                .execute(&mut **tx)
+                .await?;
+                sqlx::query("UPDATE docs SET value=? WHERE key=?")
+                    .bind(self.seal(&record)?)
+                    .bind(&key)
+                    .execute(&mut **tx)
+                    .await?;
+            } else if matches!(
+                record["status"].as_str(),
+                Some("pending_review" | "reviewing")
+            ) {
+                record["status"] = json!("cancelled");
+                record["generation"] = Value::Null;
+                self.write_document(tx, &key, &record).await?;
+            }
+        }
+        for key in [
+            format!("manager_pending:{sid}"),
+            format!("session_naming:{sid}"),
+        ] {
+            sqlx::query("DELETE FROM docs WHERE key=?")
+                .bind(key)
+                .execute(&mut **tx)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Lifecycle, event and encrypted retry receipt commit atomically. History,
+    /// pinning, activity, read cursor and agent binding are deliberately retained.
+    pub async fn lifecycle_session(
+        &self,
+        sid: &str,
+        body: &SessionLifecycle,
+        unarchive: bool,
+    ) -> Result<SessionPatchOutcome> {
+        let validation = SessionPatch {
+            client_request_id: body.client_request_id.clone(),
+            expected_revision: body.expected_revision,
+            title: None,
+            pinned: Some(false),
+            flag_dismissed: None,
+            flag_run_id: None,
+        };
+        if let Err(message) = validation.validate() {
+            return Ok(SessionPatchOutcome::Invalid(message));
+        }
+        let key = format!("session:{sid}");
+        let receipt_key = format!("receipt:session:lifecycle:{sid}:{}", body.client_request_id);
+        let fingerprint = crate::digest(&json!({"body":body,"unarchive":unarchive}));
+        let _guard = self.context_gate.write().await;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE docs SET key=key WHERE key=?")
+            .bind(&key)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&receipt_key)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            let receipt = self.unseal(&raw)?;
+            if receipt["digest"] != fingerprint {
+                return Ok(SessionPatchOutcome::Conflict(
+                    "Request identifier reused with different input",
+                ));
+            }
+            tx.commit().await?;
+            return Ok(SessionPatchOutcome::Saved(receipt["result"].clone()));
+        }
+        let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&key)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(SessionPatchOutcome::NotFound);
+        };
+        let mut session = self.unseal(&raw)?;
+        if session["main_chat"] == true && session["main_chat_agent_id"] == session["agent_id"] {
+            return Ok(SessionPatchOutcome::Conflict("Main Chat cannot be deleted"));
+        }
+        let metadata: SessionMetadata = serde_json::from_value(session.clone())?;
+        if metadata.status == SessionStatus::Deleted {
+            return Ok(SessionPatchOutcome::NotFound);
+        }
+        if metadata.metadata_revision != body.expected_revision {
+            return Ok(SessionPatchOutcome::Conflict(
+                "Session metadata revision changed",
+            ));
+        }
+        let target = if unarchive { "active" } else { "archived" };
+        let changed = session["status"] != target;
+        if !unarchive {
+            self.cancel_session_work(&mut tx, sid).await?;
+            if session["auto_naming"].is_object() {
+                session["auto_naming"]["stage"] = json!("locked");
+                session["auto_naming"]["claim"] = Value::Null;
+                session["auto_naming"]["lease_until"] = json!(0);
+            }
+        }
+        if changed {
+            let Some(revision) = metadata.metadata_revision.checked_add(1) else {
+                return Ok(SessionPatchOutcome::Conflict(
+                    "Session metadata revision exhausted",
+                ));
+            };
+            if !unarchive {
+                session["execution_epoch"] = json!(session["execution_epoch"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("Session execution epoch exhausted"))?);
+            }
+            session["status"] = json!(target);
+            session["archived_at"] = if unarchive {
+                Value::Null
+            } else {
+                json!(crate::now())
+            };
+            session["metadata_revision"] = json!(revision);
+            self.write_document(&mut tx, &key, &session).await?;
+        }
+        let result = json!({"session":self.summary_in(&session)?});
+        sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+            .bind(&receipt_key)
+            .bind(self.encode_user_record(&json!({"digest":fingerprint,"result":result}))?)
+            .execute(&mut *tx)
+            .await?;
+        if changed {
+            sqlx::query("INSERT INTO events(session_id,kind,payload) VALUES(?,?,?)")
+                .bind(sid)
+                .bind(if unarchive {
+                    "session_unarchived"
+                } else {
+                    "session_archived"
+                })
+                .bind(self.encode_user_record(&result)?)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        self.cache.lock().unwrap().invalidate(&[key]);
+        self.context_cache
+            .lock()
+            .unwrap()
+            .invalidate(&self.context_cache_key(sid));
+        Ok(SessionPatchOutcome::Saved(result))
+    }
+
+    /// Permanent deletion leaves only an identity tombstone and retry receipt.
+    /// Uncertain external jobs retain their independent broker audit/rollback data.
+    pub(crate) async fn delete_session(
+        &self,
+        sid: &str,
+        body: &SessionLifecycle,
+    ) -> Result<SessionPatchOutcome> {
+        self.erase_session(sid, body, Erase::Archived).await
+    }
+
+    /// Agent deletion erases each of its sessions in any status, Main Chat included.
+    pub(crate) async fn delete_agent_session(&self, sid: &str) -> Result<()> {
+        let Some(session) = self.get(&format!("session:{sid}")).await? else {
+            return Ok(());
+        };
+        let body = SessionLifecycle {
+            client_request_id: "agent-delete".into(),
+            expected_revision: session["metadata_revision"].as_u64().unwrap_or(0),
+        };
+        match self.erase_session(sid, &body, Erase::AgentDeletion).await? {
+            SessionPatchOutcome::Saved(_) | SessionPatchOutcome::NotFound => Ok(()),
+            SessionPatchOutcome::Conflict(message) => Err(anyhow!("{message}")),
+            SessionPatchOutcome::Invalid(message) => Err(anyhow!("{message}")),
+        }
+    }
+
+    async fn erase_session(
+        &self,
+        sid: &str,
+        body: &SessionLifecycle,
+        mode: Erase,
+    ) -> Result<SessionPatchOutcome> {
+        let validation = SessionPatch {
+            client_request_id: body.client_request_id.clone(),
+            expected_revision: body.expected_revision,
+            title: None,
+            pinned: Some(false),
+            flag_dismissed: None,
+            flag_run_id: None,
+        };
+        if let Err(message) = validation.validate() {
+            return Ok(SessionPatchOutcome::Invalid(message));
+        }
+        let _guard = self.context_gate.write().await;
+        let mut tx = self.pool.begin().await?;
+        let key = format!("session:{sid}");
+        let receipt_key = format!("receipt:session:delete:{sid}:{}", body.client_request_id);
+        let fingerprint = crate::digest(body);
+        sqlx::query("UPDATE docs SET value=value WHERE key=?")
+            .bind(&key)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&receipt_key)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            let receipt = self.unseal(&raw)?;
+            return Ok(if receipt["digest"] == fingerprint {
+                SessionPatchOutcome::Saved(receipt["result"].clone())
+            } else {
+                SessionPatchOutcome::Conflict("Request identifier reused with different input")
+            });
+        }
+        let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(&key)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(SessionPatchOutcome::NotFound);
+        };
+        let session = self.unseal(&raw)?;
+        let main_chat =
+            session["main_chat"] == true && session["main_chat_agent_id"] == session["agent_id"];
+        if main_chat && mode == Erase::Archived {
+            return Ok(SessionPatchOutcome::Conflict("Main Chat cannot be deleted"));
+        }
+        if session["status"] == "deleted" {
+            return Ok(SessionPatchOutcome::NotFound);
+        }
+        if session["metadata_revision"].as_u64() != Some(body.expected_revision) {
+            return Ok(SessionPatchOutcome::Conflict(
+                "Session metadata revision changed",
+            ));
+        }
+        if session["status"] != "archived" && mode == Erase::Archived {
+            return Ok(SessionPatchOutcome::Conflict(
+                "Archive the session before deleting it",
+            ));
+        }
+        self.cancel_session_work(&mut tx, sid).await?;
+        let mut ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM run_index WHERE session_id=?")
+                .bind(sid)
+                .fetch_all(&mut *tx)
+                .await?;
+        // Undo retains audited runs outside the active index. Delete their recovery data too.
+        let archived_runs = sqlx::query("SELECT value FROM docs WHERE substr(key,1,4)=?")
+            .bind("run:")
+            .fetch_all(&mut *tx)
+            .await?;
+        for row in archived_runs {
+            let record = self.unseal(&row.get::<Vec<u8>, _>("value"))?;
+            if record["session_id"] == sid {
+                if let Some(id) = record["id"].as_str() {
+                    if !ids.iter().any(|known| known == id) {
+                        ids.push(id.into());
+                    }
+                }
+            }
+        }
+        for id in &ids {
+            for table in [
+                "recovery_input",
+                "loop_commands",
+                "loop_events",
+                "publication_outbox",
+            ] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE run_id=?"))
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        let message_ids: Vec<String> =
+            sqlx::query_scalar("SELECT run_id FROM chat WHERE session_id=? AND role='user'")
+                .bind(sid)
+                .fetch_all(&mut *tx)
+                .await?;
+        // Explicit key namespaces plus sealed ownership; never substring-match an ID.
+        let rows = sqlx::query("SELECT key,value FROM docs")
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut uncertain_effects = Vec::new();
+        let mut removed = Vec::new();
+        let mut upload_bytes = 0u64;
+        for row in rows {
+            let candidate: String = row.get("key");
+            if candidate == key {
+                continue;
+            }
+            let record = self.unseal(&row.get::<Vec<u8>, _>("value"))?;
+            let owned = record["session_id"] == sid
+                || record["session"]["id"] == sid
+                || record["result"]["session"]["id"] == sid
+                || record["result"]["session_id"] == sid
+                || (candidate.starts_with("receipt:session:") && record["result"]["id"] == sid)
+                || [
+                    "session_mode",
+                    "core_spawn_origin",
+                    "session_ability_state",
+                    "session_usage",
+                    "manager_pending",
+                    "session_naming",
+                    "administrator_host",
+                    "administrator_browser",
+                    "administrator_notice",
+                ]
+                .iter()
+                .any(|prefix| candidate == format!("{prefix}:{sid}"))
+                || [
+                    "receipt:message",
+                    "receipt:queue",
+                    "receipt:agent_message",
+                    "receipt:messaging_route",
+                    "receipt:session:patch",
+                    "receipt:session:lifecycle",
+                    "receipt:session:history",
+                    "receipt:base",
+                    "receipt:voice",
+                    "receipt:chat_controls",
+                    "receipt:session_mode",
+                    "administrator_receipt",
+                ]
+                .iter()
+                .any(|prefix| candidate.starts_with(&format!("{prefix}:{sid}:")))
+                || message_ids
+                    .iter()
+                    .any(|id| candidate == format!("message_attachments:{id}"))
+                || ["run", "run_view"]
+                    .iter()
+                    .any(|prefix| ids.iter().any(|id| candidate == format!("{prefix}:{id}")))
+                || ids
+                    .iter()
+                    .any(|id| candidate.starts_with(&format!("receipt:run:{id}:")))
+                || ids.iter().any(|id| {
+                    record["result"]["run_id"] == *id
+                        || (candidate.starts_with("receipt:") && record["result"]["id"] == *id)
+                });
+            let owned = owned
+                || (candidate.starts_with("messaging_route:")
+                    && (record["scope"]["source_session_id"] == sid
+                        || record["scope"]["target_session_id"] == sid));
+            if owned {
+                if candidate.starts_with("run:") && record["uncertain"] == true {
+                    uncertain_effects.push(json!({"run_id":record["id"],"pending":record["pending"],"batch":record["batch"]}));
+                }
+                if candidate.starts_with("attachment:") {
+                    upload_bytes =
+                        upload_bytes.saturating_add(record["bytes"].as_u64().unwrap_or(0));
+                }
+                sqlx::query("DELETE FROM docs WHERE key=?")
+                    .bind(&candidate)
+                    .execute(&mut *tx)
+                    .await?;
+                removed.push(candidate);
+            }
+        }
+        if upload_bytes > 0 {
+            if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>(
+                "SELECT value FROM docs WHERE key='attachment_quota'",
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                let mut quota = self.unseal(&raw)?;
+                quota["bytes"] = json!(quota["bytes"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(upload_bytes));
+                self.write_document(&mut tx, "attachment_quota", &quota)
+                    .await?;
+            }
+            if let Some(agent) = session["agent_id"].as_str() {
+                let agent_quota = webagent_files::agent_quota_key(agent);
+                webagent_files::repository::subtract_quota(
+                    self,
+                    &mut tx,
+                    &agent_quota,
+                    upload_bytes,
+                )
+                .await?;
+                removed.push(agent_quota);
+            }
+        }
+        // Background tables are lazily initialized; deletion must also work without any tasks.
+        let has_background:i64=sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='background_task_index'").fetch_one(&mut *tx).await?;
+        if has_background != 0 {
+            sqlx::query("DELETE FROM background_task_delivery WHERE id IN (SELECT id FROM background_task_index WHERE session_id=?)").bind(sid).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM background_task_index WHERE session_id=?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM chat_context_boundaries WHERE message_id IN (SELECT id FROM chat WHERE session_id=?)").bind(sid).execute(&mut *tx).await?;
+        // Artifacts the agent produced go with their session.
+        let has_artifacts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_artifacts'",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if has_artifacts != 0 {
+            sqlx::query("DELETE FROM session_artifacts WHERE session_id=?")
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        for table in [
+            "chat",
+            "interactions",
+            "events",
+            "reasoning_cleanup",
+            "run_index",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE session_id=?"))
+                .bind(sid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("DELETE FROM activity_boundaries WHERE interaction_seq NOT IN (SELECT seq FROM interactions)").execute(&mut *tx).await?;
+        let Some(revision) = body.expected_revision.checked_add(1) else {
+            return Ok(SessionPatchOutcome::Conflict(
+                "Session metadata revision exhausted",
+            ));
+        };
+        let tombstone = with_session_metadata(
+            &json!({"id":sid,"agent_id":session["agent_id"],"status":"deleted",
+            "title":"","metadata_revision":revision,"execution_epoch":session["execution_epoch"],
+            "uncertain_effects":uncertain_effects}),
+            None,
+        )?;
+        // Bypass prepare_session_document only for this lifecycle-owned tombstone.
+        sqlx::query("UPDATE docs SET value=? WHERE key=?")
+            .bind(self.encode_user_record(&tombstone)?)
+            .bind(&key)
+            .execute(&mut *tx)
+            .await?;
+        let result = json!({"id":sid,"deleted":true});
+        self.write_document(
+            &mut tx,
+            &receipt_key,
+            &json!({"digest":fingerprint,"result":result}),
+        )
+        .await?;
+        tx.commit().await?;
+        self.remove_blobs(removed.iter().filter_map(|k| k.strip_prefix("attachment:")));
+        removed.push(key);
+        self.cache.lock().unwrap().invalidate(&removed);
+        self.context_cache
+            .lock()
+            .unwrap()
+            .invalidate(&self.context_cache_key(sid));
+        Ok(SessionPatchOutcome::Saved(result))
+    }
+
+    /// Merge partial writes without restoring stale lifecycle, history, queue or personal-read authorities.
+    pub(super) async fn prepare_session_document(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        key: &str,
+        value: &Value,
+    ) -> Result<Value> {
+        webagent_chat::session::prepare_session_document(self, tx, key, value, crate::now()).await
+    }
+
+    /// Transactional, retry-safe backfill on first use of each user database.
+    /// The SQLite write reservation precedes all reads, fencing other processes.
+    /// A failure rolls back documents and marker together. No chat/event rows,
+    /// agent binding, run state, or checkpoint sequences are modified.
+    pub(super) async fn migrate_session_metadata(&self) -> Result<()> {
+        if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .fetch_optional(&self.pool)
+            .await?
+        {
+            if self.unseal(&raw)?["version"] != 1 {
+                return Err(anyhow!("Unsupported session metadata migration"));
+            }
+            return Ok(());
+        }
+        let _guard = self.context_gate.write().await;
+        let mut tx = self.pool.begin().await?;
+        // Even when no marker exists this statement reserves the SQLite writer.
+        sqlx::query("UPDATE docs SET key=key WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(raw) = sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            if self.unseal(&raw)?["version"] != 1 {
+                return Err(anyhow!("Unsupported session metadata migration"));
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        let mut after = String::new();
+        loop {
+            let rows = sqlx::query("SELECT key,value FROM docs WHERE key LIKE 'session:%' AND key>? ORDER BY key LIMIT 128")
+                .bind(&after).fetch_all(&mut *tx).await?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                let key: String = row.get("key");
+                let session = self.unseal(&row.get::<Vec<u8>, _>("value"))?;
+                let activity = sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT MAX(created_at) FROM chat WHERE session_id=?",
+                )
+                .bind(key.strip_prefix("session:").unwrap())
+                .fetch_one(&mut *tx)
+                .await?;
+                let upgraded = with_session_metadata(&session, activity)?;
+                if upgraded != session {
+                    sqlx::query("UPDATE docs SET value=? WHERE key=?")
+                        .bind(self.encode_user_record(&upgraded)?)
+                        .bind(&key)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                after = key;
+            }
+        }
+        sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+            .bind(MIGRATION_KEY)
+            .bind(self.encode_user_record(&json!({"version":1}))?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// One-time rename of the former recycling-bin status, its timestamp and lifecycle events.
+    pub(super) async fn migrate_archived_status(&self) -> Result<()> {
+        const KEY: &str = "migration:session_archived_status";
+        let marker = "SELECT 1 FROM docs WHERE key=?";
+        if sqlx::query(marker)
+            .bind(KEY)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let _guard = self.context_gate.write().await;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE docs SET key=key WHERE key=?")
+            .bind(KEY)
+            .execute(&mut *tx)
+            .await?;
+        if sqlx::query(marker)
+            .bind(KEY)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let rows = sqlx::query("SELECT key,value FROM docs WHERE key LIKE 'session:%'")
+            .fetch_all(&mut *tx)
+            .await?;
+        for row in rows {
+            let mut session = self.unseal(&row.get::<Vec<u8>, _>("value"))?;
+            let Some(map) = session.as_object_mut() else {
+                continue;
+            };
+            let legacy = map.get("status").is_some_and(|status| status == "recycled");
+            let at = map.remove("recycled_at");
+            if !legacy && at.is_none() {
+                continue;
+            }
+            map.insert("archived_at".into(), at.unwrap_or(Value::Null));
+            if legacy {
+                map.insert("status".into(), json!("archived"));
+            }
+            sqlx::query("UPDATE docs SET value=? WHERE key=?")
+                .bind(self.encode_user_record(&session)?)
+                .bind(row.get::<String, _>("key"))
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("UPDATE events SET kind=CASE kind WHEN 'session_recycled' THEN 'session_archived' ELSE 'session_unarchived' END WHERE kind IN ('session_recycled','session_restored')")
+            .execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+            .bind(KEY)
+            .bind(self.encode_user_record(&json!({"version":1}))?)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a typed session metadata request with an explicit retry identity and expected revision.
+    fn patch(
+        request: &str,
+        revision: u64,
+        title: Option<&str>,
+        pinned: Option<bool>,
+    ) -> SessionPatch {
+        SessionPatch {
+            client_request_id: request.into(),
+            expected_revision: revision,
+            title: title.map(str::to_owned),
+            pinned,
+            flag_dismissed: None,
+            flag_run_id: None,
+        }
+    }
+
+    /// Build a typed archive/unarchive/delete request for lifecycle assertions.
+    fn lifecycle(request: &str, revision: u64) -> SessionLifecycle {
+        SessionLifecycle {
+            client_request_id: request.into(),
+            expected_revision: revision,
+        }
+    }
+
+    /// Verify statistics pagination omits private context while retaining unknown usage accounting.
+    #[tokio::test]
+    async fn session_statistics_are_bounded_private_and_preserve_unknown_usage() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put(
+                "session:a",
+                &json!({"id":"a","title":"First","checkpoint_input":["private"]}),
+            )
+            .await
+            .unwrap();
+        store
+            .put("session:b", &json!({"id":"b","title":"Second"}))
+            .await
+            .unwrap();
+        store.put("session_usage:a", &json!({"input_tokens":7,"output_tokens":3,"reported_calls":1,"unreported_calls":1,"known_cost_usd":0.0,"unknown_cost_calls":1,"private":"secret"})).await.unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .insert_chat(&mut tx, "a", "r", "assistant", &json!("secret content"))
+            .await
+            .unwrap();
+        store
+            .insert_chat(&mut tx, "b", "r2", "user", &json!("other content"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let (first, next) = store.session_statistics_page(false, 0, 1).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(next, Some(1));
+        assert_eq!(first[0]["id"], "a");
+        assert_eq!(first[0]["message_count"], 1);
+        assert!(first[0]["last_public_seq"].as_u64().unwrap() > 0);
+        assert_eq!(first[0]["usage"]["input_tokens"], 7);
+        assert_eq!(first[0]["usage"]["unknown_cost_calls"], 1);
+        assert!(!serde_json::to_string(&first).unwrap().contains("secret"));
+        assert!(first[0].get("checkpoint_input").is_none());
+        let (second, next) = store.session_statistics_page(false, 1, 1).await.unwrap();
+        assert_eq!(next, None);
+        assert!(second[0]["usage"].is_null());
+        assert_eq!(second[0]["message_count"], 1);
+        assert!(store
+            .session_statistics_page(true, 0, 100)
+            .await
+            .unwrap()
+            .0
+            .is_empty());
+    }
+
+    /// Verify untouched conversations stay out of the visible list while Main Chat remains.
+    #[tokio::test]
+    async fn visible_listing_omits_untouched_conversations() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        for (id, main) in [("empty", false), ("used", false), ("main", true)] {
+            store
+                .put(
+                    &format!("session:{id}"),
+                    &json!({"id":id,"agent_id":"a","main_chat":main,"main_chat_agent_id":"a"}),
+                )
+                .await
+                .unwrap();
+        }
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .insert_chat(&mut tx, "used", "r", "user", &json!("hello"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        store
+            .put(
+                "session:archived-empty",
+                &json!({"id":"archived-empty","status":"archived","agent_id":"a"}),
+            )
+            .await
+            .unwrap();
+        let listed = store.ordered_visible_sessions_status(false).await.unwrap();
+        let ids: Vec<_> = listed.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"used"));
+        assert!(ids.contains(&"main"));
+        let archived = store.ordered_visible_sessions_status(true).await.unwrap();
+        assert!(archived.iter().any(|s| s["id"] == "archived-empty"));
+    }
+
+    /// Verify archive/unarchive preserves history and metadata and old receipts cannot repeat an effect after restart.
+    #[tokio::test]
+    async fn lifecycle_preserves_history_metadata_retries_and_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store.put("session:s", &json!({"id":"s","title":"Keep me","pinned":true,"created_at":100,"checkpoint_input":["keep"],"checkpoint_through":42})).await.unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .insert_chat(&mut tx, "s", "r", "assistant", &json!("history"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let history = store.chat_snapshot("s").await.unwrap();
+        let stale = store.get("session:s").await.unwrap().unwrap();
+        let SessionPatchOutcome::Saved(result) = store
+            .lifecycle_session("s", &lifecycle("delete", 0), false)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(result["session"]["status"], "archived");
+        assert_eq!(result["session"]["metadata_revision"], 1);
+        assert!(store.ordered_sessions().await.unwrap().is_empty());
+        assert_eq!(store.ordered_sessions_status(true).await.unwrap().len(), 1);
+        assert_eq!(store.chat_snapshot("s").await.unwrap(), history);
+        store.put("session:s", &stale).await.unwrap();
+        assert_eq!(
+            store.get("session:s").await.unwrap().unwrap()["status"],
+            "archived"
+        );
+        let SessionPatchOutcome::Saved(retry) = store
+            .lifecycle_session("s", &lifecycle("delete", 0), false)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(result, retry);
+        assert!(matches!(
+            store
+                .lifecycle_session("s", &lifecycle("delete", 0), true)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        assert!(matches!(
+            store
+                .lifecycle_session("s", &lifecycle("unarchive-stale", 0), true)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        assert!(matches!(
+            store
+                .lifecycle_session("missing", &lifecycle("missing", 0), false)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::NotFound
+        ));
+        assert!(matches!(
+            store
+                .lifecycle_session("s", &lifecycle(" ", 1), true)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Invalid(_)
+        ));
+        let resumed = Store::open(root.path()).await.unwrap();
+        let SessionPatchOutcome::Saved(unarchived) = resumed
+            .lifecycle_session("s", &lifecycle("unarchive", 1), true)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(unarchived["session"]["status"], "active");
+        assert!(unarchived["session"]["archived_at"].is_null());
+        for field in ["title", "pinned", "last_active_at", "created_at"] {
+            assert_eq!(unarchived["session"][field], stale[field]);
+        }
+        let saved = resumed.get("session:s").await.unwrap().unwrap();
+        assert_eq!(saved["checkpoint_input"], stale["checkpoint_input"]);
+        assert_eq!(saved["checkpoint_through"], 42);
+        assert_eq!(resumed.chat_snapshot("s").await.unwrap(), history);
+        let raw: Vec<u8> = sqlx::query_scalar(
+            "SELECT value FROM docs WHERE key='receipt:session:lifecycle:s:delete'",
+        )
+        .fetch_one(&resumed.pool)
+        .await
+        .unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("Keep me"));
+        // Retrying an old delete after unarchive returns its receipt, not a new deletion.
+        resumed
+            .lifecycle_session("s", &lifecycle("delete", 0), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed.get("session:s").await.unwrap().unwrap()["status"],
+            "active"
+        );
+    }
+
+    /// Verify delete removes conversation-owned private records and selections without touching another session or reviving work.
+    #[tokio::test]
+    async fn delete_erases_private_data_without_reviving_work_or_other_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put(
+                "session:s",
+                &json!({"id":"s","agent_id":"shared_default","title":"Private title"}),
+            )
+            .await
+            .unwrap();
+        store
+            .put("session:other", &json!({"id":"other"}))
+            .await
+            .unwrap();
+        store.put("run:r",&json!({"id":"r","session_id":"s","status":"queued","input":[{"role":"user","content":"private"}]})).await.unwrap();
+        store
+            .put(
+                "attachment:a",
+                &json!({"id":"a","session_id":"s","bytes":3}),
+            )
+            .await
+            .unwrap();
+        store
+            .put("attachment_quota", &json!({"bytes":8}))
+            .await
+            .unwrap();
+        store
+            .put(
+                "reply_attachments:r",
+                &json!({"session_id":"s","files":[{"id":"a"}]}),
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                "reply_attachments:other-run",
+                &json!({"session_id":"other","files":[]}),
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                "session_context_assets:s",
+                &json!({"version":1,"session_id":"s","scopes":{}}),
+            )
+            .await
+            .unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .write_document(
+                &mut tx,
+                "receipt:base:s:r:call",
+                &json!({"output":{"artifact":"private checkpoint"}}),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(matches!(
+            store
+                .delete_session("s", &lifecycle("delete", 0))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        store
+            .lifecycle_session("s", &lifecycle("archive", 0), false)
+            .await
+            .unwrap();
+        assert!(store
+            .get("session_context_assets:s")
+            .await
+            .unwrap()
+            .is_some());
+        let receipt = lifecycle("delete", 1);
+        assert!(matches!(
+            store.delete_session("s", &receipt).await.unwrap(),
+            SessionPatchOutcome::Saved(_)
+        ));
+        assert!(matches!(
+            store.delete_session("s", &receipt).await.unwrap(),
+            SessionPatchOutcome::Saved(_)
+        ));
+        assert!(matches!(
+            store
+                .lifecycle_session("s", &lifecycle("unarchive", 2), true)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::NotFound
+        ));
+        assert!(store.get("run:r").await.unwrap().is_none());
+        assert!(store.get("attachment:a").await.unwrap().is_none());
+        assert!(store.get("reply_attachments:r").await.unwrap().is_none());
+        assert!(store
+            .get("reply_attachments:other-run")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get("session_context_assets:s")
+            .await
+            .unwrap()
+            .is_none());
+        let base_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM docs WHERE key='receipt:base:s:r:call'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(base_count, 0);
+        assert_eq!(
+            store.get("attachment_quota").await.unwrap().unwrap()["bytes"],
+            5
+        );
+        assert_eq!(
+            store.get("session:other").await.unwrap().unwrap()["status"],
+            "active"
+        );
+        assert!(store
+            .ordered_sessions_status(true)
+            .await
+            .unwrap()
+            .is_empty());
+        let tombstone = store.get("session:s").await.unwrap().unwrap();
+        assert_eq!(tombstone["status"], "deleted");
+        assert!(!tombstone.to_string().contains("Private title"));
+        assert!(store
+            .put("session:s", &json!({"id":"s","status":"active"}))
+            .await
+            .is_err());
+        assert!(store
+            .put(
+                "run:late",
+                &json!({"id":"late","session_id":"s","status":"queued"})
+            )
+            .await
+            .is_err());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recovery_input WHERE run_id='r'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        let reopened = Store::open(root.path()).await.unwrap();
+        assert!(!reopened.session_available("s").await.unwrap());
+    }
+
+    /// Verify archive cancels session runs/tasks/reviews and rejects late publication even after unarchive.
+    #[tokio::test]
+    async fn archive_cancels_owned_work_and_fences_late_writers() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .create_admin_account("root", "long-hash-placeholder", "generation")
+            .await
+            .unwrap();
+        store.put("session:s", &json!({"id":"s"})).await.unwrap();
+        store
+            .put("session:other", &json!({"id":"other"}))
+            .await
+            .unwrap();
+        store.put("run:r",&json!({"id":"r","session_id":"s","status":"queued","generation":"","lease_epoch":0,"run_revision":0})).await.unwrap();
+        let mut run = store.get("run:r").await.unwrap().unwrap();
+        assert!(store
+            .claim_run(&mut run, "owner", "generation")
+            .await
+            .unwrap());
+        store
+            .put(
+                "run:other",
+                &json!({"id":"other","session_id":"other","status":"queued"}),
+            )
+            .await
+            .unwrap();
+        let task =
+            json!({"id":"bg","user_id":"admin","session_id":"s","status":"running","revision":0});
+        assert!(store.background_cas(&task, None).await.unwrap());
+        store
+            .put(
+                "manager_review:review",
+                &json!({"id":"review","session_id":"s","status":"reviewing","generation":"before"}),
+            )
+            .await
+            .unwrap();
+        store
+            .put("manager_pending:s", &json!({"id":"review"}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .lifecycle_session("s", &lifecycle("delete", 0), false)
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Saved(_)
+        ));
+        assert_eq!(
+            store.get("run:r").await.unwrap().unwrap()["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            store.get("run:other").await.unwrap().unwrap()["status"],
+            "queued"
+        );
+        assert_eq!(
+            store.background_get("bg").await.unwrap().unwrap()["status"],
+            "cancelled"
+        );
+        assert!(store.get("manager_pending:s").await.unwrap().is_none());
+        assert_eq!(
+            store.get("manager_review:review").await.unwrap().unwrap()["status"],
+            "cancelled"
+        );
+        assert!(!store
+            .renew_run_lease("r", "generation", "owner", 1)
+            .await
+            .unwrap());
+        run["status"] = json!("completed");
+        assert!(store
+            .save_run(
+                &mut run,
+                "model_output",
+                &json!({"output":[],"terminal_text":"late"})
+            )
+            .await
+            .is_err());
+        store
+            .lifecycle_session("s", &lifecycle("unarchive", 1), true)
+            .await
+            .unwrap();
+        assert!(store
+            .active_runs()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r["session_id"] != "s"));
+        assert!(!store.background_cas(&task, Some(0)).await.unwrap());
+    }
+
+    /// Verify lifecycle cancellation handles unknown future nonterminal states and receipt failure rolls back all effects.
+    #[tokio::test]
+    async fn lifecycle_cancels_all_nonterminal_states_and_rolls_back_receipt_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store.put("session:s", &json!({"id":"s"})).await.unwrap();
+        for (i, status) in [
+            "queued",
+            "running",
+            "waiting_approval",
+            "waiting_recovery",
+            "stopped",
+            "unknown_future_state",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let sid = format!("state-{i}");
+            let rid = format!("state-run-{i}");
+            store
+                .put(&format!("session:{sid}"), &json!({"id":sid}))
+                .await
+                .unwrap();
+            store
+                .put(
+                    &format!("run:{rid}"),
+                    &json!({"id":rid,"session_id":sid,"status":status}),
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    store
+                        .lifecycle_session(&sid, &lifecycle("delete", 0), false)
+                        .await
+                        .unwrap(),
+                    SessionPatchOutcome::Saved(_)
+                ),
+                "{status}"
+            );
+            assert_eq!(
+                store.get(&format!("run:{rid}")).await.unwrap().unwrap()["status"],
+                "cancelled"
+            );
+        }
+        store
+            .put(
+                "run:r",
+                &json!({"id":"r","session_id":"s","status":"completed"}),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TRIGGER reject_lifecycle BEFORE INSERT ON docs WHEN NEW.key LIKE 'receipt:session:lifecycle:%' BEGIN SELECT RAISE(ABORT,'receipt failure'); END").execute(&store.pool).await.unwrap();
+        assert!(store
+            .lifecycle_session("s", &lifecycle("delete", 0), false)
+            .await
+            .is_err());
+        assert_eq!(
+            store.get("session:s").await.unwrap().unwrap()["status"],
+            "active"
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind='session_archived' AND session_id='s'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+        sqlx::query("DROP TRIGGER reject_lifecycle")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store
+            .lifecycle_session("s", &lifecycle("delete", 0), false)
+            .await
+            .unwrap();
+        assert!(store
+            .put(
+                "run:new",
+                &json!({"id":"new","session_id":"s","status":"queued"})
+            )
+            .await
+            .unwrap_err()
+            .downcast_ref::<ArchivedSession>()
+            .is_some());
+        let mut run = store.get("run:r").await.unwrap().unwrap();
+        run["status"] = json!("queued");
+        assert!(store
+            .save_run_override(&mut run, "resumed", &json!({}))
+            .await
+            .unwrap_err()
+            .downcast_ref::<ArchivedSession>()
+            .is_some());
+        assert!(store
+            .atomic_docs_event(
+                vec![],
+                "s",
+                "message",
+                &json!({"role":"user","run_id":"new","content":"blocked"})
+            )
+            .await
+            .unwrap_err()
+            .downcast_ref::<ArchivedSession>()
+            .is_some());
+        assert!(store.chat_snapshot("s").await.unwrap().0.is_empty());
+    }
+
+    /// Verify the one-time conversion renames former recycling-bin status, timestamp and events.
+    #[tokio::test]
+    async fn legacy_recycled_sessions_convert_to_archived_once() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        // Legacy documents bypass put, which rejects the retired status.
+        let legacy = |key: &'static str, value: Value| {
+            let store = store.clone();
+            async move {
+                sqlx::query("INSERT OR REPLACE INTO docs(key,value) VALUES(?,?)")
+                    .bind(key)
+                    .bind(store.encode_user_record(&value).unwrap())
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        legacy(
+            "session:old",
+            json!({"id":"old","status":"recycled","recycled_at":5}),
+        )
+        .await;
+        legacy(
+            "session:live",
+            json!({"id":"live","status":"active","recycled_at":null}),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO events(session_id,kind,payload) VALUES('old','session_recycled',x'')",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM docs WHERE key='migration:session_archived_status'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.migrate_archived_status().await.unwrap();
+        let old = store.get("session:old").await.unwrap().unwrap();
+        assert_eq!(
+            (
+                old["status"].as_str(),
+                old["archived_at"].as_i64(),
+                old.get("recycled_at")
+            ),
+            (Some("archived"), Some(5), None)
+        );
+        let live = store.get("session:live").await.unwrap().unwrap();
+        assert_eq!(
+            (live["status"].as_str(), live.get("recycled_at")),
+            (Some("active"), None)
+        );
+        let kind: String = sqlx::query_scalar("SELECT kind FROM events WHERE session_id='old'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "session_archived");
+        legacy("session:late", json!({"id":"late","status":"recycled"})).await;
+        store.migrate_archived_status().await.unwrap();
+        assert_eq!(
+            store.get("session:late").await.unwrap().unwrap()["status"],
+            "recycled",
+            "the marker runs it once"
+        );
+    }
+
+    /// Verify lifecycle no-ops produce no new revision/event and claims cannot revive archived sessions.
+    #[tokio::test]
+    async fn lifecycle_noops_and_scheduler_claim_do_not_revive_archived_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store.put("session:s", &json!({"id":"s"})).await.unwrap();
+        store
+            .lifecycle_session("s", &lifecycle("already-active", 0), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("session:s").await.unwrap().unwrap()["metadata_revision"],
+            0
+        );
+        store.put("run:r",&json!({"id":"r","session_id":"s","status":"queued","generation":"","lease_epoch":0,"run_revision":0})).await.unwrap();
+        // A legacy inconsistent fixture must not bypass scheduler admission.
+        let mut session = store.get("session:s").await.unwrap().unwrap();
+        session["status"] = json!("archived");
+        session["metadata_revision"] = json!(1);
+        session["archived_at"] = json!(1);
+        store.put("session:s", &session).await.unwrap();
+        let mut run = store.get("run:r").await.unwrap().unwrap();
+        assert!(store
+            .claim_run(&mut run, "test-owner", "test-generation")
+            .await
+            .unwrap_err()
+            .downcast_ref::<ArchivedSession>()
+            .is_some());
+        assert_eq!(
+            store.get("run:r").await.unwrap().unwrap()["status"],
+            "queued"
+        );
+        store
+            .lifecycle_session("s", &lifecycle("already-archived", 1), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("session:s").await.unwrap().unwrap()["metadata_revision"],
+            1
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE kind IN ('session_archived','session_unarchived')",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Race message admission against archive and verify admitted work is cancelled or never committed.
+    #[tokio::test]
+    async fn lifecycle_and_admission_race_across_independent_stores() {
+        let root = tempfile::tempdir().unwrap();
+        let a = Store::open(root.path()).await.unwrap();
+        let b = Store::open(root.path()).await.unwrap();
+        for i in 0..12 {
+            let sid = format!("race-{i}");
+            a.put(&format!("session:{sid}"), &json!({"id":sid}))
+                .await
+                .unwrap();
+            let request = lifecycle("delete", 0);
+            let docs = vec![(
+                format!("run:r-{i}"),
+                json!({"id":format!("r-{i}"),"session_id":sid,"status":"queued"}),
+            )];
+            let payload = json!({"role":"user","content":"hello","run_id":format!("r-{i}")});
+            let (deleted, admitted) = tokio::join!(
+                a.lifecycle_session(&sid, &request, false),
+                b.atomic_docs_event(docs, &sid, "message", &payload)
+            );
+            let deleted = matches!(deleted.unwrap(), SessionPatchOutcome::Saved(_));
+            assert!(deleted);
+            assert_eq!(
+                a.get(&format!("session:{sid}")).await.unwrap().unwrap()["status"],
+                "archived"
+            );
+            if admitted.is_ok() {
+                assert_eq!(
+                    a.get(&format!("run:r-{i}")).await.unwrap().unwrap()["status"],
+                    "cancelled"
+                );
+            } else {
+                assert!(a.get(&format!("run:r-{i}")).await.unwrap().is_none());
+            }
+        }
+    }
+
+    /// Verify public publication advances activity that survives stale session snapshots.
+    #[tokio::test]
+    async fn publication_activity_and_checkpoint_preservation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put(
+                "session:s",
+                &json!({"id":"s","created_at":100,"last_active_at":100}),
+            )
+            .await
+            .unwrap();
+        store
+            .put("session:other", &json!({"id":"other","created_at":100}))
+            .await
+            .unwrap();
+        let stale = store.get("session:s").await.unwrap().unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .insert_chat(&mut tx, "s", "r1", "user", &json!("hello"))
+            .await
+            .unwrap();
+        store
+            .insert_chat(&mut tx, "s", "r1", "assistant", &json!("reply"))
+            .await
+            .unwrap();
+        store
+            .insert_chat(&mut tx, "other", "r2", "assistant", &json!("elsewhere"))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let (messages, _) = store.chat_snapshot("s").await.unwrap();
+        let summary = store.session_read_summary("s").await.unwrap();
+        assert_eq!(summary["last_active_at"], messages[1]["created_at"]);
+        assert_eq!(summary["metadata_revision"], 0);
+        store.put("session:s", &stale).await.unwrap();
+        let after = store.session_read_summary("s").await.unwrap();
+        assert_eq!(after["last_active_at"], summary["last_active_at"]);
+        assert_eq!(after["metadata_revision"], 0);
+        let reopened = Store::open(root.path()).await.unwrap();
+        assert_eq!(reopened.session_read_summary("s").await.unwrap(), after);
+    }
+
+    /// Verify publication activity rolls back with its failed transaction.
+    #[tokio::test]
+    async fn activity_failure_rolls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put("session:s", &json!({"id":"s","created_at":1}))
+            .await
+            .unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        store
+            .insert_chat(&mut tx, "s", "r", "assistant", &json!("reply"))
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(store.chat_snapshot("s").await.unwrap().0.len(), 0);
+        assert_eq!(
+            store.session_read_summary("s").await.unwrap()["last_active_at"],
+            1
+        );
+    }
+
+    /// Exercise title/identity bounds and reject model-selected authority fields in session patches.
+    #[test]
+    fn session_patch_validation() {
+        for title in ["", "   ", "bad\nname", &"é".repeat(101)] {
+            assert!(patch("r", 0, Some(title), None).validate().is_err());
+        }
+        assert!(patch("r", 0, Some(&"é".repeat(100)), None)
+            .validate()
+            .is_ok());
+        assert!(patch("r", 0, None, Some(false)).validate().is_ok());
+        assert!(patch("r", 0, None, None).validate().is_err());
+        assert!(patch(" r", 0, None, Some(true)).validate().is_err());
+        assert!(
+            serde_json::from_value::<SessionPatch>(json!({"client_request_id":"r",
+            "expected_revision":0,"pinned":true,"agent_id":"other"}))
+            .is_err()
+        );
+    }
+
+    /// Mark Dismissed / Mark Active toggle only the named run's flag; a stale run is refused.
+    #[tokio::test]
+    async fn session_flag_dismissal_names_its_run() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put(
+                "session:s",
+                &json!({"id":"s","title":"T","created_at":100,"flag":"needs_input",
+                "flag_source":"agent","notification":"Pick a plan","flag_run_id":"r2",
+                "flag_set_at":120,"flag_dismissed":false}),
+            )
+            .await
+            .unwrap();
+        let flag = |request: &str, revision: u64, run: &str, dismissed: bool| SessionPatch {
+            flag_dismissed: Some(dismissed),
+            flag_run_id: Some(run.into()),
+            ..patch(request, revision, None, None)
+        };
+        assert!(flag("a", 0, "r2", true).validate().is_ok());
+        let missing_run = SessionPatch {
+            flag_dismissed: Some(true),
+            ..patch("b", 0, None, None)
+        };
+        assert!(missing_run.validate().is_err());
+        assert!(matches!(
+            store
+                .patch_session("s", &flag("stale", 0, "r1", true))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict("Session flag changed")
+        ));
+        let SessionPatchOutcome::Saved(dismissed) = store
+            .patch_session("s", &flag("dismiss", 0, "r2", true))
+            .await
+            .unwrap()
+        else {
+            panic!("dismiss failed")
+        };
+        assert_eq!(dismissed["session"]["flag_dismissed"], true);
+        assert_eq!(dismissed["session"]["flag"], "needs_input");
+        assert_eq!(dismissed["session"]["notification"], "Pick a plan");
+        let SessionPatchOutcome::Saved(active) = store
+            .patch_session("s", &flag("active", 1, "r2", false))
+            .await
+            .unwrap()
+        else {
+            panic!("mark active failed")
+        };
+        assert_eq!(active["session"]["flag_dismissed"], false);
+        assert_eq!(active["session"]["metadata_revision"], 2);
+    }
+
+    /// Verify metadata patch receipt replay and stale-checkpoint writes preserve newer user metadata.
+    #[tokio::test]
+    async fn session_patch_atomic_retry_and_stale_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put(
+                "session:s",
+                &json!({"id":"s","title":"Old","created_at":100,
+            "last_active_at":150,"checkpoint_through":42}),
+            )
+            .await
+            .unwrap();
+        let mut stale = store.get("session:s").await.unwrap().unwrap();
+        let request = patch("request", 0, Some("  Private renamed title  "), Some(true));
+        let SessionPatchOutcome::Saved(result) = store.patch_session("s", &request).await.unwrap()
+        else {
+            panic!("patch failed")
+        };
+        assert_eq!(result["session"]["title"], "Private renamed title");
+        assert_eq!(result["session"]["metadata_revision"], 1);
+        assert_eq!(result["session"]["last_active_at"], 150);
+        assert!(result["session"].get("checkpoint_through").is_none());
+        let SessionPatchOutcome::Saved(retry) = store.patch_session("s", &request).await.unwrap()
+        else {
+            panic!("retry failed")
+        };
+        assert_eq!(retry, result);
+        assert!(matches!(
+            store
+                .patch_session("s", &patch("request", 0, Some("Different"), None))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        assert!(matches!(
+            store
+                .patch_session("s", &patch("stale", 0, None, Some(false)))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        stale["checkpoint_through"] = json!(99);
+        store.put("session:s", &stale).await.unwrap();
+        let saved = store.get("session:s").await.unwrap().unwrap();
+        assert_eq!(saved["title"], "Private renamed title");
+        assert_eq!(saved["pinned"], true);
+        assert_eq!(saved["metadata_revision"], 1);
+        assert_eq!(saved["checkpoint_through"], 99);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='session_updated'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        // A no-op is receipted but creates no new revision/event.
+        assert!(matches!(
+            store
+                .patch_session("s", &patch("noop", 1, None, Some(true)))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Saved(_)
+        ));
+        assert_eq!(
+            store.get("session:s").await.unwrap().unwrap()["metadata_revision"],
+            1
+        );
+        let raws: Vec<Vec<u8>> = sqlx::query_scalar("SELECT value FROM docs")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert!(raws
+            .iter()
+            .all(|raw| !String::from_utf8_lossy(raw).contains("Private renamed title")));
+        let reopened = Store::open(root.path()).await.unwrap();
+        assert_eq!(reopened.get("session:s").await.unwrap().unwrap(), saved);
+        assert!(matches!(
+            reopened.patch_session("missing", &request).await.unwrap(),
+            SessionPatchOutcome::NotFound
+        ));
+    }
+
+    /// Verify session ordering, account isolation and single-winner revision CAS across independent Stores.
+    #[tokio::test]
+    async fn session_patch_ordering_isolation_and_cross_process_conflict() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        for (id, pinned, active) in [
+            ("a", false, 200),
+            ("b", false, 200),
+            ("p", true, 100),
+            ("new", false, 300),
+        ] {
+            store
+                .put(
+                    &format!("session:{id}"),
+                    &json!({"id":id,"pinned":pinned,"created_at":100,
+                "last_active_at":active,"checkpoint_input":["secret"]}),
+                )
+                .await
+                .unwrap();
+        }
+        store
+            .put(
+                "session:archived",
+                &json!({"id":"archived","status":"archived","pinned":true}),
+            )
+            .await
+            .unwrap();
+        let list = store.ordered_sessions().await.unwrap();
+        assert_eq!(
+            list.iter()
+                .map(|s| s["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["p", "new", "a", "b"]
+        );
+        assert!(list.iter().all(|s| s.get("checkpoint_input").is_none()));
+        assert!(matches!(
+            store
+                .patch_session("archived", &patch("r", 0, None, Some(false)))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::Conflict(_)
+        ));
+        sqlx::query("INSERT INTO user_accounts(user_id,username,value) VALUES('other','other',?)")
+            .bind(
+                store
+                    .seal(&json!({"user_id":"other","username":"other"}))
+                    .unwrap(),
+            )
+            .execute(&store.app_pool)
+            .await
+            .unwrap();
+        let other = store.for_user("other").await.unwrap();
+        assert!(other.ordered_sessions().await.unwrap().is_empty());
+        assert!(matches!(
+            other
+                .patch_session("a", &patch("r", 0, None, Some(true)))
+                .await
+                .unwrap(),
+            SessionPatchOutcome::NotFound
+        ));
+        // Independently opened Store instances do not share the in-process gate.
+        let independent = Store::open(root.path()).await.unwrap();
+        let first = patch("one", 0, Some("Winner one"), None);
+        let second = patch("two", 0, Some("Winner two"), None);
+        let (one, two) = tokio::join!(
+            store.patch_session("a", &first),
+            independent.patch_session("a", &second)
+        );
+        let outcomes = [one.unwrap(), two.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, SessionPatchOutcome::Saved(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, SessionPatchOutcome::Conflict(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            store.get("session:a").await.unwrap().unwrap()["metadata_revision"],
+            1
+        );
+    }
+
+    /// Inject retry-receipt failure and verify metadata and event writes roll back before a successful retry.
+    #[tokio::test]
+    async fn session_patch_receipt_failure_rolls_back_everything() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        store
+            .put("session:s", &json!({"id":"s","title":"Original"}))
+            .await
+            .unwrap();
+        let original = store.get("session:s").await.unwrap().unwrap();
+        sqlx::query("CREATE TRIGGER reject_patch_receipt BEFORE INSERT ON docs WHEN NEW.key LIKE 'receipt:session:patch:%' BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END")
+            .execute(&store.pool).await.unwrap();
+        let request = patch("atomic", 0, Some("Changed"), Some(true));
+        assert!(store.patch_session("s", &request).await.is_err());
+        assert_eq!(store.get("session:s").await.unwrap().unwrap(), original);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='session_updated'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        sqlx::query("DROP TRIGGER reject_patch_receipt")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.patch_session("s", &request).await.unwrap(),
+            SessionPatchOutcome::Saved(_)
+        ));
+    }
+
+    /// Verify missing legacy metadata receives defaults without replacing saved fields or accepting invalid values.
+    #[test]
+    fn session_metadata_defaults_and_preservation() {
+        let original = json!({"id":"s", "agent_id":"a", "title":"Original",
+            "created_at":100, "checkpoint_input":[{"text":"keep"}], "checkpoint_through":42});
+        let upgraded = with_session_metadata(&original, Some(150)).unwrap();
+        assert_eq!(upgraded["last_active_at"], 150);
+        assert_eq!(upgraded["pinned"], false);
+        assert_eq!(upgraded["status"], "active");
+        for key in [
+            "id",
+            "agent_id",
+            "title",
+            "created_at",
+            "checkpoint_input",
+            "checkpoint_through",
+        ] {
+            assert_eq!(original[key], upgraded[key]);
+        }
+        assert_eq!(
+            with_session_metadata(&upgraded, Some(999)).unwrap(),
+            upgraded
+        );
+        let mut edited = upgraded.clone();
+        edited["pinned"] = json!(true);
+        edited["status"] = json!("archived");
+        edited["archived_at"] = json!(200);
+        edited["metadata_revision"] = json!(3);
+        assert_eq!(with_session_metadata(&edited, None).unwrap(), edited);
+        assert_eq!(
+            with_session_metadata(&original, None).unwrap()["last_active_at"],
+            100
+        );
+        let mut invalid = original;
+        invalid["pinned"] = json!("yes");
+        assert!(with_session_metadata(&invalid, None).is_err());
+    }
+
+    /// Verify partial checkpoint writes preserve newer lifecycle and user metadata.
+    #[tokio::test]
+    async fn session_metadata_partial_writes_preserve_existing_values() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        let original = json!({"id":"s", "title":"Keep title", "created_at":100,
+            "pinned":true, "status":"archived", "archived_at":160,
+            "last_active_at":150, "metadata_revision":3});
+        store.put("session:s", &original).await.unwrap();
+        store.put("session:s", &json!({"id":"s", "checkpoint_input":[{"text":"updated"}], "checkpoint_through":42}))
+            .await.unwrap();
+        let saved = store.get("session:s").await.unwrap().unwrap();
+        for field in [
+            "title",
+            "created_at",
+            "pinned",
+            "status",
+            "archived_at",
+            "last_active_at",
+            "metadata_revision",
+        ] {
+            assert_eq!(saved[field], original[field]);
+        }
+        assert_eq!(saved["checkpoint_through"], 42);
+    }
+
+    /// Verify per-user metadata migration rolls back all upgrades and its marker if any document is invalid.
+    #[tokio::test]
+    async fn session_metadata_migration_is_user_scoped_and_rolls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        sqlx::query("INSERT INTO user_accounts(user_id,username,value) VALUES('other','other',?)")
+            .bind(
+                store
+                    .seal(&json!({"user_id":"other", "username":"other"}))
+                    .unwrap(),
+            )
+            .execute(&store.app_pool)
+            .await
+            .unwrap();
+        let other = store.for_user("other").await.unwrap();
+        let app_marker: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .fetch_one(&store.app_pool)
+            .await
+            .unwrap();
+        assert_eq!(app_marker, 0);
+        sqlx::query("DELETE FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .execute(&other.pool)
+            .await
+            .unwrap();
+        let valid = json!({"id":"a", "created_at":100, "title":"Untouched until commit"});
+        let invalid = json!({"id":"z", "created_at":100, "pinned":"invalid"});
+        for (key, value) in [("session:a", &valid), ("session:z", &invalid)] {
+            sqlx::query("INSERT INTO docs(key,value) VALUES(?,?)")
+                .bind(key)
+                .bind(store.seal(value).unwrap())
+                .execute(&other.pool)
+                .await
+                .unwrap();
+        }
+        assert!(other.migrate_session_metadata().await.is_err());
+        assert_eq!(other.get("session:a").await.unwrap().unwrap(), valid);
+        let marker: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .fetch_one(&other.pool)
+            .await
+            .unwrap();
+        assert_eq!(marker, 0);
+        sqlx::query("DELETE FROM docs WHERE key='session:z'")
+            .execute(&other.pool)
+            .await
+            .unwrap();
+        other.migrate_session_metadata().await.unwrap();
+        assert_eq!(
+            other.get("session:a").await.unwrap().unwrap()["last_active_at"],
+            100
+        );
+        assert!(store.get("session:a").await.unwrap().is_none());
+    }
+
+    /// The first user message is read alone, skipping earlier assistant rows and later turns.
+    #[tokio::test]
+    async fn first_user_message_returns_the_starting_prompt_only() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        assert!(store.first_user_message("s").await.unwrap().is_none());
+        for (id, role, text, at) in [
+            ("a", "assistant", "Welcome", 10),
+            ("u1", "user", "You are tasked with checking", 20),
+            ("u2", "user", "Later turn", 30),
+        ] {
+            sqlx::query("INSERT INTO chat(id,session_id,run_id,role,content,created_at) VALUES(?,'s','r',?,?,?)")
+                .bind(id).bind(role).bind(store.seal(&json!(text)).unwrap()).bind(at)
+                .execute(&store.pool).await.unwrap();
+        }
+        assert_eq!(
+            store.first_user_message("s").await.unwrap(),
+            Some((json!("You are tasked with checking"), 20))
+        );
+    }
+
+    /// Verify legacy metadata backfill is durable/idempotent and newly admitted sessions get canonical metadata immediately.
+    #[tokio::test]
+    async fn session_metadata_migration_persistence_and_atomic_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).await.unwrap();
+        // Seed an old document through SQL only in this disposable test database.
+        let original = json!({"id":"old", "agent_id":"a", "title":"Secret legacy title",
+            "created_at":100, "checkpoint_input":[], "checkpoint_through":7});
+        sqlx::query("DELETE FROM docs WHERE key=?")
+            .bind(MIGRATION_KEY)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO docs(key,value) VALUES('session:old',?)")
+            .bind(store.seal(&original).unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO chat(id,session_id,run_id,role,content,created_at) VALUES('m','old','r','assistant',?,150)")
+            .bind(store.seal(&json!("Secret message")).unwrap()).execute(&store.pool).await.unwrap();
+        let (_, cursor) = store.chat_snapshot("old").await.unwrap();
+        store.migrate_session_metadata().await.unwrap();
+        let migrated = store.get("session:old").await.unwrap().unwrap();
+        assert_eq!(migrated["last_active_at"], 150);
+        assert_eq!(migrated["checkpoint_through"], 7);
+        assert_eq!(store.chat_snapshot("old").await.unwrap().1, cursor);
+        let raw: Vec<u8> = sqlx::query_scalar("SELECT value FROM docs WHERE key='session:old'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("Secret legacy title"));
+        store.migrate_session_metadata().await.unwrap();
+        let again: Vec<u8> = sqlx::query_scalar("SELECT value FROM docs WHERE key='session:old'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(raw, again);
+        store
+            .atomic_docs_event(
+                vec![(
+                    "session:new".into(),
+                    json!({"id":"new", "title":"New", "created_at":200}),
+                )],
+                "new",
+                "session_created",
+                &json!({}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("session:new").await.unwrap().unwrap()["metadata_revision"],
+            0
+        );
+        store
+            .put("session:put", &json!({"id":"put", "created_at":300}))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("session:put").await.unwrap().unwrap()["last_active_at"],
+            300
+        );
+        let reopened = Store::open(root.path()).await.unwrap();
+        assert_eq!(
+            reopened.get("session:old").await.unwrap().unwrap(),
+            migrated
+        );
+    }
+}

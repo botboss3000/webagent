@@ -1,0 +1,105 @@
+{
+  "name": "browser_extension_action",
+  "description": "Act in the chatting user's own browser, in the agent's own WebAgent window, on allowed sites only.",
+  "effect": "write",
+  "repeat_guard": {
+    "risk": "none",
+    "hint": "read the page again to see whether the earlier click or typing already took effect; each click or type needs a ref from a fresh read"
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "open",
+          "navigate",
+          "read",
+          "click",
+          "type",
+          "press",
+          "scroll",
+          "tabs",
+          "close"
+        ]
+      },
+      "url": {
+        "type": "string",
+        "maxLength": 2000,
+        "description": "open/navigate: http(s) address on an allowed site"
+      },
+      "ref": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "click/type/press: a control's ref from your latest read"
+      },
+      "text": {
+        "type": "string",
+        "maxLength": 5000,
+        "description": "type: literal text to type"
+      },
+      "clear": {
+        "type": "boolean",
+        "description": "type: replace the field's current text (default true)"
+      },
+      "submit": {
+        "type": "boolean",
+        "description": "type: press Enter afterwards"
+      },
+      "key": {
+        "type": "string",
+        "enum": [
+          "Enter",
+          "Tab",
+          "Escape",
+          "Space",
+          "ArrowUp",
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "PageUp",
+          "PageDown",
+          "Home",
+          "End",
+          "Backspace"
+        ],
+        "description": "press: key sent to ref, or to the focused element"
+      },
+      "dy": {
+        "type": "integer",
+        "minimum": -20000,
+        "maximum": 20000,
+        "description": "scroll: vertical pixels (positive scrolls down)"
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "read: character offset of the next part; use next_offset from a truncated read"
+      },
+      "tab": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Act on this agent tab (from tabs) instead of the current one"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "open a tab in the user's own browser",
+      "click in my browser"
+    ],
+    "keywords": [
+      "my browser",
+      "extension"
+    ]
+  }
+}

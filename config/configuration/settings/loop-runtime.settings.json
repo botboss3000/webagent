@@ -1,0 +1,211 @@
+{
+  "_instructions": "Setting descriptors for the configuration composer (see config/configuration/settings-catalog.json). Current values are always read live; descriptors hold no defaults.",
+  "settings": [
+    {
+      "id": "loop.scheduler.max_active_runs",
+      "description": "How many agent runs the whole server executes at the same time, across all users.",
+      "type": "integer",
+      "pointer": "/scheduler/max_active_runs",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "run 8 agents at once on the server",
+        "lower server concurrency"
+      ],
+      "areas": [
+        "server",
+        "performance",
+        "runs"
+      ],
+      "min": 1,
+      "max": 64,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.scheduler.max_background_workers",
+      "description": "How many background tasks (detached tool calls and follow-ups) the server runs at the same time, across all users.",
+      "type": "integer",
+      "pointer": "/scheduler/max_background_workers",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "run 8 background tasks at once",
+        "fewer background tasks"
+      ],
+      "areas": [
+        "server",
+        "performance",
+        "runs"
+      ],
+      "min": 1,
+      "max": 64,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.scheduler.max_media_requests",
+      "description": "How many uploads and voice requests the server handles at the same time; more are told the server is busy.",
+      "type": "integer",
+      "pointer": "/scheduler/max_media_requests",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "allow 16 uploads at once",
+        "limit voice requests"
+      ],
+      "areas": [
+        "server",
+        "performance",
+        "media"
+      ],
+      "min": 1,
+      "max": 256,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.scheduler.max_attachment_reads",
+      "description": "How many attachment downloads the server serves at the same time; more wait up to ten seconds for a turn.",
+      "type": "integer",
+      "pointer": "/scheduler/max_attachment_reads",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "serve 64 attachments at once"
+      ],
+      "areas": [
+        "server",
+        "performance",
+        "media"
+      ],
+      "min": 1,
+      "max": 1024,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.tools.max_parallel_calls",
+      "description": "How many read-only tool calls one run may execute in parallel.",
+      "type": "integer",
+      "pointer": "/tools/max_parallel_calls",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "let tools run 8 at a time",
+        "only one tool call at a time"
+      ],
+      "areas": [
+        "tools",
+        "performance"
+      ],
+      "min": 1,
+      "max": 16,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.tools.approval_expiry_seconds",
+      "description": "Seconds a tool approval may wait undecided before it counts as declined; 0 means approvals never expire.",
+      "type": "integer",
+      "pointer": "/tools/approval_expiry_seconds",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "expire tool approvals after a day",
+        "never expire approvals"
+      ],
+      "areas": [
+        "tools",
+        "approvals"
+      ],
+      "min": 0,
+      "max": 2592000,
+      "bounds": "proposed"
+    },
+    {
+      "id": "loop.tools.scripts.max_steps",
+      "description": "Most tool calls one saved session script may contain.",
+      "type": "integer",
+      "pointer": "/tools/scripts/max_steps",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "allow longer session scripts",
+        "scripts with up to 30 steps",
+        "limit script length"
+      ],
+      "areas": [
+        "tools",
+        "scripts",
+        "limits"
+      ],
+      "min": 1,
+      "max": 50,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.tools.scripts.max_per_tree",
+      "description": "Most session scripts one conversation and its sub-agents can keep saved.",
+      "type": "integer",
+      "pointer": "/tools/scripts/max_per_tree",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "let a conversation save more scripts",
+        "at most 50 saved scripts per chat",
+        "fewer saved scripts"
+      ],
+      "areas": [
+        "tools",
+        "scripts",
+        "limits"
+      ],
+      "min": 1,
+      "max": 1000,
+      "bounds": "validator"
+    },
+    {
+      "id": "loop.tools.scripts.max_saved",
+      "description": "Most saved scripts one user can keep for one agent across conversations.",
+      "type": "integer",
+      "pointer": "/tools/scripts/max_saved",
+      "layers": [
+        "app"
+      ],
+      "examples": [
+        "let users save more scripts",
+        "at most 20 saved scripts per agent",
+        "fewer saved scripts"
+      ],
+      "areas": [
+        "tools",
+        "scripts",
+        "limits"
+      ],
+      "min": 1,
+      "max": 1000,
+      "bounds": "validator"
+    }
+  ],
+  "excluded": {
+    "/cache/context_budget_bytes": "Scheduler internals; not offered in v1.",
+    "/cache/document_budget_bytes": "Scheduler internals; not offered in v1.",
+    "/context/max_context_bytes": "Scheduler internals; not offered in v1.",
+    "/scheduler/background_rescan_interval_ms": "Scheduler internals; not offered in v1.",
+    "/scheduler/drain_timeout_seconds": "Scheduler internals; not offered in v1.",
+    "/scheduler/max_unresolved_runs": "Scheduler internals; not offered in v1.",
+    "/scheduler/message_detach_grace_ms": "Scheduler internals; not offered in v1.",
+    "/scheduler/poll_interval_ms": "Scheduler internals; not offered in v1.",
+    "/scheduler/recovery_interval_ms": "Scheduler internals; not offered in v1.",
+    "/schema_version": "File format version.",
+    "/tools/parallel_modes/**": "Per-tool concurrency classes set by each tool's owner.",
+    "/workflow/max_attempts": "Scheduler internals; not offered in v1.",
+    "/workflow/max_publication_bytes": "Scheduler internals; not offered in v1.",
+    "/workflow/max_turns": "Scheduler internals; not offered in v1.",
+    "/workflow/modules/**": "Gate wiring; changed only with the gates themselves."
+  }
+}

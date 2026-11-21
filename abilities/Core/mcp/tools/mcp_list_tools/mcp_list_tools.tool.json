@@ -1,0 +1,34 @@
+{
+  "name": "mcp_list_tools",
+  "description": "Read the explicitly permitted schemas for one enabled MCP connection",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "type": "string",
+        "maxLength": 80
+      }
+    },
+    "required": [
+      "connection_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "which tools does the MCP server offer"
+    ],
+    "keywords": [
+      "mcp tools"
+    ]
+  }
+}

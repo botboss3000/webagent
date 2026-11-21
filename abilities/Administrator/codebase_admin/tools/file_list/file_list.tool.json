@@ -1,0 +1,46 @@
+{
+  "name": "file_list",
+  "description": "List a directory by path, or with pattern list matching file paths recursively.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "pattern": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "task_id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{8,80}$",
+        "description": "Deprecated compatibility alias. Prefer broker_id; do not supply both. Never use a chat session ID here."
+      },
+      "broker_id": {
+        "type": "string",
+        "pattern": "^(new|[A-Za-z0-9_-]{8,80})$",
+        "description": "Omit to continue current broker work; new creates independent isolated work in this operation; reuse a returned Broker ID to switch. Session identity is automatic. Never invent an ID."
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

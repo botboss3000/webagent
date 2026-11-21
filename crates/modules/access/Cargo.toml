@@ -1,0 +1,19 @@
+[package]
+name = "webagent-access"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+webagent-platform = { path = "../../platform" }
+webagent-accounts = { path = "../accounts" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fs2 = "0.4"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+uuid = { version = "1", features = ["v4"] }
+webagent-configuration = { path = "../configuration" }
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+aes-gcm = "0.10"

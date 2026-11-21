@@ -1,0 +1,34 @@
+{
+  "name": "request_human",
+  "description": "Ask this agent's staff to take over the conversation.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reason": {
+        "maxLength": 300,
+        "type": "string"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "the user wants to talk to a person",
+      "hand over to staff"
+    ],
+    "keywords": [
+      "human",
+      "staff",
+      "escalate"
+    ]
+  }
+}

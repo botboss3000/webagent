@@ -1,0 +1,49 @@
+{
+  "name": "rate_skill",
+  "description": "Record private 1-5 feedback for one accessible bundled or own skill.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "ability_id": {
+        "maxLength": 64,
+        "type": "string"
+      },
+      "comment": {
+        "maxLength": 1000,
+        "type": "string"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "kind": {
+        "enum": [
+          "ability",
+          "tool",
+          "selectable",
+          "own"
+        ],
+        "type": "string"
+      },
+      "score": {
+        "maximum": 5,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "skill_id": {
+        "maxLength": 64,
+        "type": "string"
+      }
+    },
+    "required": [
+      "ability_id",
+      "kind",
+      "skill_id"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval"
+  }
+}

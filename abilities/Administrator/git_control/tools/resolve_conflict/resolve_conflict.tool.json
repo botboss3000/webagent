@@ -1,0 +1,49 @@
+{
+  "name": "resolve_conflict",
+  "description": "Resolve one conflict with an exact file hash; never stage implicitly",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "deny",
+    "visitor": "deny"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "repo": {
+        "type": "string"
+      },
+      "path": {
+        "type": "string"
+      },
+      "strategy": {
+        "type": "string",
+        "enum": [
+          "ours",
+          "theirs",
+          "both"
+        ]
+      },
+      "expected_sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "required": [
+      "path",
+      "strategy",
+      "expected_sha256"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "resolve a merge conflict",
+      "pick a side in a conflicted file"
+    ],
+    "keywords": [
+      "merge conflict",
+      "conflict"
+    ]
+  }
+}

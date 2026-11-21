@@ -1,0 +1,56 @@
+{
+  "name": "mcp_add_connection",
+  "description": "Add a public HTTPS MCP connection to this agent. Requires agent-manager authority and separately controlled permission. Never accepts credentials",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "type": "string",
+        "maxLength": 80
+      },
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "name": {
+        "type": "string",
+        "maxLength": 100
+      },
+      "endpoint": {
+        "type": "string",
+        "maxLength": 2048
+      },
+      "allowed_tools": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 128
+      }
+    },
+    "required": [
+      "connection_id",
+      "expected_revision",
+      "name",
+      "endpoint",
+      "allowed_tools"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "add an MCP server",
+      "connect a new MCP connection"
+    ],
+    "keywords": [
+      "mcp",
+      "connect server"
+    ]
+  }
+}

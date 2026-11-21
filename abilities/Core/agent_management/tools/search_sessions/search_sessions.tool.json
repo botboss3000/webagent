@@ -1,0 +1,41 @@
+{
+  "name": "search_sessions",
+  "description": "Search user and agent messages of the sessions in scope by keywords.",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "search my other chats",
+      "find the session where we talked about billing"
+    ],
+    "keywords": [
+      "search sessions"
+    ]
+  }
+}

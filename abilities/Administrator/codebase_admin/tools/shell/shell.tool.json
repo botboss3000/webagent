@@ -1,0 +1,34 @@
+{
+  "name": "shell",
+  "description": "Execute a shell command in this session workspace; policy-gated.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "additionalProperties": false
+  },
+  "effect": "write",
+  "retention": {
+    "output": "log",
+    "tail_lines": 40
+  },
+  "repeat_guard": {
+    "risk": "low"
+  },
+  "default_policy": {
+    "operator": "deny",
+    "member": "deny",
+    "visitor": "deny"
+  }
+}

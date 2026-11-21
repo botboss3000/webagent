@@ -1,0 +1,39 @@
+{
+  "name": "terminal_read",
+  "description": "Read bounded PTY output and receive a fresh observation sequence",
+  "effect": "read",
+  "retention": {
+    "output": "log",
+    "tail_lines": 40
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "terminal_id": {
+        "type": "string"
+      },
+      "cursor": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "terminal_id"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "read the terminal output",
+      "what did the command print"
+    ],
+    "keywords": [
+      "terminal output"
+    ]
+  }
+}

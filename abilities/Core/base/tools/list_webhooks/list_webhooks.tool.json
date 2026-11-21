@@ -1,0 +1,19 @@
+{
+  "name": "list_webhooks",
+  "description": "List this caller's private webhook metadata and revisions, without bearer credentials.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  }
+}

@@ -1,0 +1,385 @@
+// Broker chip: a header session-tab chip (beside Spawns) for the broker tasks this chat's
+// builds and checks ran. The engine records each job's stage snapshot while it follows
+// the job (crates/modules/engine/src/runtime/build_tasks.rs); the chip loads the task list
+// on session open and on build events. The list is an expand-list (ui/components/expand-list): each
+// task is a row whose card loads only when that row is opened, under it. While a card is
+// open its counters tick in the browser and a live one re-reads the task every 15 s.
+import {requestTouchVibration} from '../../shared/vibrate/vibrate.js';
+import {createExpandList} from '../../components/expand-list/expand-list.js';
+import {idlePaused} from '../core/idle-pause.js';
+
+const ACTIVE = ['queued','running','needs_decision'];
+const FAILED = ['failed','stale','cancelled','uncertain','interrupted','needs_decision'];
+const PAGE = 10, REFRESH_MS = 15000, HOLD_MS = 500, STALE_SECONDS = 60;
+
+/** Minutes with one decimal, counted in whole tenths (0.1 every 6 s). */
+export function minutes(seconds) {
+  return (Math.floor(Math.max(0, seconds || 0) / 6) / 10).toFixed(1);
+}
+
+/** A task's summary as its card title: clamped to two lines, with "See more" to expand
+ * it when it is longer. */
+function summaryText(text) {
+  const wrap = el('div', '');
+  const body = el('strong', 'broker-card-title broker-card-clamp', text);
+  const more = el('button', 'broker-card-more', 'See more'); more.type = 'button'; more.hidden = true;
+  more.onclick = e => {
+    e.stopPropagation();
+    const open = body.classList.toggle('broker-card-clamp');
+    more.textContent = open ? 'See more' : 'See less';
+  };
+  wrap.append(body, more);
+  // Measure once the card is in the page; a summary that fits shows no button.
+  requestAnimationFrame(() => { more.hidden = body.scrollHeight <= body.clientHeight + 1; });
+  return wrap;
+}
+
+/** The chip or row icon for a task row: spinner, check, error or warning. */
+export function taskIcon(task) {
+  if (task?.warning) return 'warning';
+  if (FAILED.includes(task?.status)) return 'error';
+  if (ACTIVE.includes(task?.status)) return 'running';
+  return task?.status === 'completed' ? 'done' : 'running';
+}
+
+/** Seconds a running counter shows now: the snapshot's value plus time since it was read. */
+export function liveSeconds(base, snapshotAt, serverOffset, nowMs = Date.now()) {
+  // A browser clock behind the snapshot never counts backwards.
+  return (base || 0) + Math.max(0, nowMs / 1000 + serverOffset - (snapshotAt || 0));
+}
+
+/** A running stage's verdict at `seconds`, flipping to slow as soon as it passes p90. */
+export function stageVerdict(stage, seconds) {
+  const [p50, p90] = stage?.normal || [];
+  if (p90 == null) return 'no baseline';
+  return seconds > p90 ? 'slow' : seconds > p50 ? 'slower than median' : 'on track';
+}
+
+/** Time left, counting down from the snapshot; past 0 the job is past its normal range. */
+export function remaining(range, elapsedSinceSnapshot) {
+  if (!Array.isArray(range)) return null;
+  const [low, high] = range.map(value => value - elapsedSinceSnapshot);
+  return high <= 0 ? 'past normal' : minutes(Math.max(0, low)) + '–' + minutes(high) + ' min left';
+}
+
+const ICONS = {running:'loader-circle', done:'circle-check', error:'circle-alert', warning:'triangle-alert'};
+const LABELS = {queued:'Queued', running:'Running', needs_decision:'Needs a decision', completed:'Completed', failed:'Failed',
+  stale:'Stale', cancelled:'Cancelled', uncertain:'Uncertain — needs reconciliation', interrupted:'Interrupted'};
+
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const icon = state => { const s = el('span', 'chip-status broker-icon broker-' + state); s.innerHTML = `<i data-lucide="${ICONS[state]}"></i>`; return s; };
+const draw = () => window.lucide?.createIcons();
+
+// Long-press (touch) or right-click opens a context menu; a plain click does `tap`.
+function pressable(node, tap, hold) {
+  let timer = null, held = false;
+  node.addEventListener('pointerdown', e => { if (e.button) return; held = false; clearTimeout(timer);
+    timer = setTimeout(() => { held = true; try { requestTouchVibration(); } catch {} hold(e); }, HOLD_MS); });
+  for (const type of ['pointerup', 'pointerleave', 'pointercancel']) node.addEventListener(type, () => clearTimeout(timer));
+  node.addEventListener('contextmenu', e => { e.preventDefault(); clearTimeout(timer); held = true; hold(e); });
+  node.addEventListener('click', e => { e.stopPropagation(); if (held) { held = false; return; } tap(e); });
+}
+
+/** The class that colors a job status: done in bold green, failures in red. */
+// A stage the broker sidekick ran reads "run tests (sidekick)", or "(sidekick → server)" after a fallback.
+export function stageName(stage) {
+  return stage.stage + (stage.where ? ' (' + stage.where + ')' : '');
+}
+
+export function statusClass(status) {
+  return status === 'completed' ? 'broker-ok' : FAILED.includes(status) && status !== 'needs_decision' ? 'broker-blocker' : '';
+}
+
+/** The Builds page, opened at one job when its ID is known. */
+function buildsHref(jobId) {
+  return '/app?tab=builds' + (jobId ? '&job_id=' + encodeURIComponent(jobId) : '');
+}
+
+/** The jobs ahead of a queued one, in red, each linking to its job on the Builds page. */
+function queueAhead(ahead) {
+  const box = el('div', 'broker-queue'); box.append(el('strong', '', 'Queue ahead'));
+  for (const other of ahead) {
+    const row = el('div', 'broker-blocker');
+    const name = other.name || other.task_id || other.job_id.slice(0, 8);
+    if (other.job_id) {
+      const link = el('a', '', name); link.href = buildsHref(other.job_id); row.append(link);
+    } else row.append(name);
+    row.append(' · ' + (LABELS[other.status] || other.status) + (other.phase ? ' (' + other.phase + ')' : '') + (other.session ? ' · session ' + other.session : ''));
+    box.append(row);
+  }
+  return box;
+}
+
+function stageRows(snapshot, age, slowNow, failed = false) {
+  const table = el('div', 'broker-stages'); table.setAttribute('role', 'table');
+  const head = el('div', 'broker-stage broker-stage-head'); head.setAttribute('role', 'row');
+  for (const label of ['#', 'Stage', 'Time', 'Normal (min)', 'Status']) head.append(el('span', '', label));
+  table.append(head);
+  // A failed job's unfinished stages show where it stopped, in red.
+  const rows = [...(snapshot.finished_stages || []).map(s => [s, 'done']), ...(snapshot.running_stages || []).map(s => [s, failed ? 'failed' : 'running']), ...(snapshot.upcoming_stages || []).map(s => [s, 'upcoming'])];
+  for (const [stage, state] of rows) {
+    const row = el('div', 'broker-stage broker-stage-' + state); row.setAttribute('role', 'row');
+    const time = el('span', 'broker-time');
+    if (state === 'running') { time.dataset.base = stage.seconds || 0; slowNow.push([stage, row]); }
+    time.textContent = state === 'upcoming' ? '—' : minutes(state === 'running' ? (stage.seconds || 0) + age : stage.seconds) + ' min';
+    const normal = stage.normal ? minutes(stage.normal[0]) + '–' + minutes(stage.normal[1]) : (stage.samples ? '' : 'no history');
+    row.append(el('span', 'broker-id', stage.id || ''), el('span', 'broker-name', stageName(stage)), time, el('span', 'broker-normal', normal),
+      el('span', 'broker-state', state === 'running' ? stageVerdict(stage, (stage.seconds || 0) + age) : state));
+    table.append(row);
+  }
+  return table;
+}
+
+/** One task's card: its newest build (or newest job) with stages and Background, and the
+ * other jobs under Advanced. `hold(job)` opens a job's menu on long-press; `pageLink` adds a
+ * link to the job on the Builds page; `inline` renders it inside a
+ * list row instead of as its own popup, without the title the row already shows. Returns
+ * the element, a `tick` that recomputes the counters, and whether the job is still active. */
+export function renderCard(task, detail, hold = () => {}, {pageLink = false, inline = false} = {}) {
+  const box = el('div', inline ? 'broker-card broker-card-inline' : 'sub-chip-menu broker-card wa-scroll-gutter');
+  if (!inline) box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-label', 'Broker task ' + (task.name || task.task_id));
+  const jobs = detail.task.jobs || [];
+  const main = jobs.find(job => job.kind === 'build') || jobs[0];
+  const checks = jobs.filter(job => job !== main);
+  const offset = (detail.now || Date.now() / 1000) - Date.now() / 1000;
+  const head = el('div', 'broker-card-head');
+  const heading = el('div', 'broker-card-title-wrap');
+  heading.append(summaryText(task.name || task.task_id));
+  if (task.name) heading.append(el('small', 'broker-card-label', task.task_id));
+  head.append(icon(taskIcon(detail.task)), heading);
+  box.append(head);
+  if (!main) { box.append(el('p', 'broker-note', 'No job yet.')); return {box, tick() {}}; }
+  const snapshot = main.snapshot || {}, live = ACTIVE.includes(main.status);
+  const age = live ? liveSeconds(0, main.snapshot_at, offset) : 0;
+  const job = el('div', 'broker-job');
+  const title = el('div', 'broker-job-title', (main.kind === 'check' ? 'Check ' + (main.check || '') : 'Build') + ' ' + main.job_id.slice(0, 8) + ' · ');
+  title.append(el('span', statusClass(main.status), LABELS[main.status] || main.status));
+  pressable(title, () => {}, () => hold(main));
+  const line = el('div', 'broker-summary');
+  job.append(title, line);
+  if (detail.task.warning === 'broker_unresponsive') job.append(el('p', 'broker-blocker', 'Broker not responding — the job’s state is unknown.'));
+  else if (detail.task.warning === 'stalled') job.append(el('p', 'broker-blocker', 'Stalled — no progress for ' + minutes(snapshot.idle_seconds) + ' min.'));
+  if (main.status === 'queued' && (snapshot.queued_behind || []).length) job.append(queueAhead(snapshot.queued_behind));
+  const slow = [];
+  if (snapshot.finished_stages || snapshot.running_stages) job.append(stageRows(snapshot, age, slow, FAILED.includes(main.status)));
+  if ((snapshot.background || []).length) {
+    const bg = el('div', 'broker-background'); bg.append(el('strong', '', 'Background'));
+    for (const work of snapshot.background) bg.append(el('div', '', work.name + ' · ' + (work.status || 'running') + ' · ' + minutes(work.seconds) + ' min' + (work.result ? ' (' + work.result + ')' : '')));
+    job.append(bg);
+  }
+  const stale = el('p', 'broker-stale'); job.append(stale);
+  box.append(job);
+  if (checks.length) {
+    const advanced = el('details', 'broker-advanced'); advanced.append(el('summary', '', 'Advanced · ' + checks.length + ' more job' + (checks.length === 1 ? '' : 's')));
+    for (const other of checks) {
+      const row = el('div', 'broker-check');
+      const seconds = other.snapshot?.job_seconds;
+      const state = el('span', 'broker-normal'); state.append(el('span', statusClass(other.status), LABELS[other.status] || other.status), seconds != null ? ' · ' + minutes(seconds) + ' min' : '');
+      row.append(icon(taskIcon(other)), el('span', '', (other.kind === 'check' ? (other.check || 'check') : 'build') + ' ' + other.job_id.slice(0, 8)), state);
+      pressable(row, () => {}, () => hold(other));
+      advanced.append(row);
+    }
+    box.append(advanced);
+  }
+  if (pageLink) {
+    const link = el('a', 'broker-page-link', 'Open in Builds');
+    link.href = buildsHref(main.job_id);
+    box.append(link);
+  }
+  // Recomputes every counter from the snapshot and the time since it was read.
+  function tick() {
+    const since = live ? liveSeconds(0, main.snapshot_at, offset) : 0;
+    const parts = [];
+    if (snapshot.job_seconds != null) parts.push('Elapsed ' + minutes(snapshot.job_seconds + since) + ' min');
+    if (snapshot.job_normal) parts.push('normal ' + minutes(snapshot.job_normal[0]) + '–' + minutes(snapshot.job_normal[1]));
+    const left = live ? remaining(snapshot.remaining_seconds, since) : null; if (left) parts.push(left);
+    line.textContent = parts.join(' · ');
+    for (const [stage, row] of slow) {
+      const seconds = (stage.seconds || 0) + since;
+      row.querySelector('.broker-time').textContent = minutes(seconds) + ' min';
+      const verdict = stageVerdict(stage, seconds);
+      row.querySelector('.broker-state').textContent = verdict;
+      row.classList.toggle('broker-slow', verdict === 'slow');
+    }
+    stale.textContent = live && since > STALE_SECONDS ? 'Updated ' + minutes(since) + ' min ago' : '';
+  }
+  tick();
+  return {box, tick, live};
+}
+
+/** Mounts the chip into the header session-tabs row and returns its session lifecycle. */
+export function createBrokerChip({request, note = () => {}, family = () => []}) {
+  const tabs = document.getElementById('chat-sub-header');
+  const chip = document.createElement('button');
+  chip.type = 'button'; chip.id = 'chat-broker-chip'; chip.className = 'sub-chip chip-broker';
+  chip.setAttribute('aria-haspopup', 'dialog'); chip.setAttribute('aria-expanded', 'false');
+  let sid = '', tasks = [], popup = null, epoch = 0, pending = null, plan = null, shown = 0;
+  const cards = new Map(); // task_id -> timers of an open card
+
+  const path = (id, rest = '') => '/sessions/' + encodeURIComponent(id) + '/build-tasks' + rest;
+
+  function stopCard(id) { const timers = cards.get(id); if (timers) { clearInterval(timers.tick); clearInterval(timers.refresh); cards.delete(id); } }
+  function close() {
+    for (const id of [...cards.keys()]) stopCard(id);
+    plan = null;
+    popup?.remove(); popup = null; chip.setAttribute('aria-expanded', 'false');
+  }
+  /** Places a body-mounted popup under the chip; phone widths get a full-width panel (CSS). */
+  function show(node) {
+    close(); popup = node; document.body.append(node); chip.setAttribute('aria-expanded', 'true');
+    const r = chip.getBoundingClientRect();
+    node.style.top = (r.bottom + 4) + 'px';
+    if (!matchMedia('(max-width: 600px)').matches) node.style.left = Math.max(4, Math.min(r.left, innerWidth - node.offsetWidth - 8)) + 'px';
+    draw();
+    const outside = e => { if (!popup || popup.contains(e.target) || chip.contains(e.target)) return; document.removeEventListener('pointerdown', outside, true); close(); };
+    document.addEventListener('pointerdown', outside, true);
+  }
+
+
+  function renderChip() {
+    tabs?.toggleAttribute('data-broker', tasks.length > 0);
+    if (!tasks.length) { chip.remove(); close(); return; }
+    const wrap = tabs?.querySelector('#chat-sub-scroll-wrap');
+    if (wrap && chip.parentNode !== wrap) wrap.append(chip);
+    const state = taskIcon(tasks[0]);
+    chip.replaceChildren(icon(state), document.createTextNode('Broker'));
+    chip.title = 'Broker: ' + (tasks[0].name || tasks[0].task_id) + ' — ' + (LABELS[tasks[0].status] || tasks[0].status || 'waiting');
+    chip.setAttribute('aria-label', chip.title);
+    draw();
+  }
+
+  async function refresh() {
+    if (!sid) return;
+    const turn = ++epoch, ids = [{id: sid, label: ''}, ...family(sid)];
+    try {
+      const lists = await Promise.all(ids.map(({id, label}) => request(path(id)).then(data => (data.tasks || []).map(task => ({...task, sid: id, spawn: label}))).catch(() => [])));
+      if (turn !== epoch) return;
+      tasks = lists.flat().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+      renderChip();
+      if (plan && popup?.classList.contains('broker-list')) plan.update(tasks.slice(0, Math.max(shown, Math.min(tasks.length, PAGE))).map(planRow));
+    } catch (error) { note('Broker tasks unavailable: ' + error.message); }
+  }
+
+  // Coalesce bursts of build events into one read.
+  function soon() { clearTimeout(pending); pending = setTimeout(() => void refresh(), 500); }
+
+  function menu(items) {
+    const box = el('div', 'sub-chip-menu broker-menu'); box.setAttribute('role', 'menu');
+    for (const {label, glyph, run, confirm} of items) {
+      const row = el('button', 'family-menu-item'); row.type = 'button'; row.setAttribute('role', 'menuitem');
+      row.innerHTML = `<span class="chip-status"><i data-lucide="${glyph}"></i></span>`;
+      const text = el('span', 'family-menu-text', label); row.append(text);
+      let armed = false;
+      row.onclick = async e => {
+        e.stopPropagation();
+        // Hard-to-undo actions ask once more on the same row.
+        if (confirm && !armed) { armed = true; text.textContent = confirm; row.classList.add('broker-confirm'); return; }
+        row.disabled = true;
+        try { await run(); } catch (error) { note(error.message); } finally { close(); }
+      };
+      box.append(row);
+    }
+    show(box);
+  }
+
+  async function taskMenu(task) {
+    let detail = null;
+    try { detail = await request(path(task.sid, '/' + encodeURIComponent(task.task_id))); } catch (error) { note(error.message); return; }
+    const jobs = detail.task.jobs || [], running = jobs.some(job => ACTIVE.includes(job.status));
+    const items = [];
+    if (detail.can_control && !detail.task.abandoned && jobs[0]?.status !== 'completed')
+      items.push({label: 'Cancel task', glyph: 'octagon-x', confirm: 'Tap again: stop its build and discard unreleased edits',
+        run: async () => { const out = await request(path(task.sid, '/' + encodeURIComponent(task.task_id) + '/cancel'), 'POST', {}); note(out.state === 'abandoned' ? 'Task cancelled' : out.reason || 'Stop requested'); await refresh(); }});
+    items.push({label: 'Copy Broker ID', glyph: 'copy', run: () => navigator.clipboard.writeText(task.task_id)});
+    if (jobs[0]) items.push({label: 'Open in Builds page', glyph: 'external-link', run: () => { location.href = '/app?tab=builds&job_id=' + encodeURIComponent(jobs[0].job_id); }});
+    if (!running) items.push({label: 'Clear from this session', glyph: 'eye-off',
+      run: async () => { await request(path(task.sid, '/' + encodeURIComponent(task.task_id) + '/clear'), 'POST', {}); await refresh(); }});
+    menu(items);
+  }
+
+  function jobMenu(task, job, canControl) {
+    const items = [];
+    if (canControl && ACTIVE.includes(job.status))
+      items.push({label: 'Stop job', glyph: 'square', confirm: 'Tap again: stop this job and keep the task',
+        run: async () => { await request(path(task.sid, '/' + encodeURIComponent(task.task_id) + '/jobs/' + encodeURIComponent(job.job_id) + '/stop'), 'POST', {}); note('Stop requested'); }});
+    items.push({label: 'Copy Job ID', glyph: 'copy', run: () => navigator.clipboard.writeText(job.job_id)});
+    menu(items);
+  }
+
+  function chipMenu() {
+    if (tasks.length === 1) return void taskMenu(tasks[0]);
+    if (!tasks.some(task => !ACTIVE.includes(task.status))) return;
+    menu([{label: 'Clear finished jobs', glyph: 'eye-off', run: async () => {
+      await Promise.all([...new Set(tasks.map(task => task.sid))].map(id => request(path(id, '/clear'), 'POST', {}))); await refresh(); }}]);
+  }
+
+  /** A broker task as an expand-list row; its card is the row's lazy content. */
+  const STATES = {done: 'completed', error: 'failed', warning: 'need-help', running: 'in-progress'};
+  function planRow(task) {
+    return {id: task.task_id, title: task.name || task.task_id, lazy: true, task,
+      status: task.status === 'cancelled' ? 'cancelled' : STATES[taskIcon(task)],
+      pill: LABELS[task.status] || task.status || 'Waiting', badges: task.spawn ? [task.spawn] : []};
+  }
+
+  /** Fills an opened row's slot with its card; a live card re-reads every REFRESH_MS. */
+  async function loadCard(task, slot) {
+    const opened = sid, id = task.task_id, url = path(task.sid, '/' + encodeURIComponent(id));
+    slot.replaceChildren(el('p', 'broker-note', 'Loading…'));
+    const put = detail => {
+      const keep = slot.querySelector('details')?.open;
+      const view = renderCard(task, detail, job => jobMenu(task, job, detail.can_control), {pageLink: detail.can_control, inline: true});
+      if (keep) view.box.querySelector('details')?.setAttribute('open', '');
+      slot.replaceChildren(view.box); draw();
+      const timers = cards.get(id) || {}; clearInterval(timers.tick);
+      timers.tick = setInterval(view.tick, 1000); cards.set(id, timers);
+      return view.live;
+    };
+    let detail;
+    try { detail = await request(url); } catch (error) { slot.replaceChildren(el('p', 'broker-note', error.message)); delete slot.dataset.loaded; return; }
+    if (sid !== opened || !slot.isConnected) return;
+    if (!put(detail)) return;
+    cards.get(id).refresh = setInterval(async () => {
+      if (!slot.isConnected) return stopCard(id);
+      if (idlePaused()) return;
+      try {
+        const next = await request(url);
+        if (cards.has(id) && slot.isConnected && !put(next)) { clearInterval(cards.get(id).refresh); void refresh(); }
+      } catch {}
+    }, REFRESH_MS);
+  }
+
+  function openList() {
+    const box = el('div', 'sub-chip-menu family-spawn-menu broker-list wa-scroll-gutter'); box.setAttribute('aria-label', 'Broker tasks');
+    show(box); // show() closes any earlier popup, so the list's state starts after it
+    plan = createExpandList({
+      label: 'Broker tasks',
+      defaultOpen: () => tasks.length === 1,
+      onHold: row => void taskMenu(row.task),
+      onExpand: (row, open, slot) => {
+        if (open) return void loadCard(row.task, slot);
+        // Closed: stop its timers and load it fresh when reopened.
+        stopCard(row.id); delete slot.dataset.loaded; slot.replaceChildren();
+      }
+    });
+    shown = Math.min(tasks.length, PAGE);
+    const list = plan;
+    box.append(plan.element);
+    plan.update(tasks.slice(0, shown).map(planRow));
+    // Show the next ten as the list scrolls to its end.
+    box.addEventListener('scroll', () => {
+      if (shown < tasks.length && box.scrollTop + box.clientHeight >= box.scrollHeight - 24) { shown = Math.min(tasks.length, shown + PAGE); list.update(tasks.slice(0, shown).map(planRow)); }
+    });
+  }
+
+  pressable(chip, () => { if (popup) return close(); openList(); }, chipMenu);
+
+  return {
+    open(id) { close(); sid = id; tasks = []; renderChip(); void refresh(); },
+    /** Re-reads the list after a published chat item that concerns a build, or an agent
+     * reply (a task begun or reserved since shows from then on). */
+    published(item) { if (sid && (item?.role === 'assistant' || /build_work|:build:/.test(JSON.stringify(item)))) soon(); },
+    refresh,
+    disconnect() { close(); sid = ''; tasks = []; ++epoch; clearTimeout(pending); renderChip(); }
+  };
+}

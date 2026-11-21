@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<!-- Served from the active V3 UI release. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>WebAgent</title>
+<link rel="manifest" href="/ui/manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/ui/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="/ui/shell/layout.css">
+<link rel="stylesheet" href="/ui/chat/chat-resize/chat-resize.css">
+<link rel="stylesheet" href="/ui/chat/controls/session-dropdown/session-list.css">
+<link rel="stylesheet" href="/ui/chat/chat-shared.css">
+<link rel="stylesheet" href="/ui/shared/models/model-menu.css">
+<link rel="stylesheet" href="/ui/shell/header.css">
+<link rel="stylesheet" href="/ui/shared/models/delete-control.css">
+<link rel="stylesheet" href="/ui/shared/search-field/search-field.css">
+<link rel="stylesheet" href="/ui/main-panel/agents/pages/sessions/sessions-search.css">
+<link rel="stylesheet" href="/ui/main-panel/account/account.css">
+<link rel="stylesheet" href="/ui/chat/panel.css">
+<link rel="stylesheet" href="/ui/chat/header.css">
+<link rel="stylesheet" href="/ui/chat/composer-footer.css">
+<link rel="stylesheet" href="/ui/chat/composer-above.css">
+<link rel="stylesheet" href="/ui/chat/composer.css">
+<link rel="stylesheet" href="/ui/chat/controls/footer-controls.css">
+<link rel="stylesheet" href="/ui/chat/core/messages.css">
+<link rel="stylesheet" href="/ui/chat/core/turns.css">
+<link rel="stylesheet" href="/ui/chat/core/markdown.css">
+<link rel="stylesheet" href="/ui/chat/core/zoom-chip.css">
+<link rel="stylesheet" href="/ui/chat/controls/session-dropdown/menu.css">
+<link rel="stylesheet" href="/ui/shared/option-list/option-list.css">
+<link rel="stylesheet" href="/ui/shared/models/model-table.css">
+<link rel="stylesheet" href="/ui/shared/models/model-analytics.css">
+<link rel="stylesheet" href="/ui/shared/models/save-indicator.css">
+<link rel="stylesheet" href="/ui/main-panel/app/pages/models/models-base.css">
+<link rel="stylesheet" href="/ui/main-panel/agents/pages/abilities/ability-table.css">
+<link rel="stylesheet" href="/ui/chat/core/confirm-panel.css">
+<link rel="stylesheet" href="/ui/shared/models/field-tip.css">
+<link rel="stylesheet" href="/ui/shared/skeleton/skeleton.css">
+<link rel="stylesheet" href="/ui/shared/controls/controls.css">
+<link rel="stylesheet" href="/ui/shared/config-rows/config-rows.css">
+<link rel="stylesheet" href="/ui/shared/css/design-system.css">
+<link rel="stylesheet" href="/ui/boot/loading-shell.css">
+<link rel="stylesheet" href="/ui/shell/app.css?v=chat-partial-20260930">
+<link rel="stylesheet" href="/ui/chat/widget/window.css">
+<link rel="stylesheet" href="/ui/chat/chat.css?v=chat-overlay-20260930">
+<link rel="stylesheet" href="/ui/shared/subpage-list/subpage-list.css">
+<link rel="stylesheet" href="/ui/main-panel/agents/pages/identity/identity.css">
+<script src="/ui/boot/uuid.js"></script>
+<script src="/ui/vendor/lucide/lucide.min.js"></script>
+<script src="/ui/vendor/marked.min.js"></script>
+<script src="/ui/vendor/purify.min.js"></script>
+<script type="module" src="/ui/shell/app.js?v=chat-overlay-20260930"></script>
+<!-- Start-up modules, fetched in one wave; ui/module-preload.test.cjs keeps this list current. -->
+<link rel="modulepreload" href="/ui/browser-data-reset.js">
+<link rel="modulepreload" href="/ui/chat/chat-resize/chat-resize.js">
+<link rel="modulepreload" href="/ui/chat/controls/actions-chip.js">
+<link rel="modulepreload" href="/ui/chat/controls/artifact-element.js">
+<link rel="modulepreload" href="/ui/chat/controls/artifacts-chip.js">
+<link rel="modulepreload" href="/ui/chat/controls/audio-capture.js">
+<link rel="modulepreload" href="/ui/chat/controls/broker-chip.js">
+<link rel="modulepreload" href="/ui/chat/controls/chat-config-live.js">
+<link rel="modulepreload" href="/ui/chat/controls/chat-config.js">
+<link rel="modulepreload" href="/ui/chat/controls/chat-pill-config.js">
+<link rel="modulepreload" href="/ui/chat/controls/composer-media.js">
+<link rel="modulepreload" href="/ui/chat/controls/feedback.js">
+<link rel="modulepreload" href="/ui/chat/controls/footer-handle.js">
+<link rel="modulepreload" href="/ui/chat/controls/login-hook.js">
+<link rel="modulepreload" href="/ui/chat/controls/session-controls.js">
+<link rel="modulepreload" href="/ui/chat/controls/session-dropdown/config.js">
+<link rel="modulepreload" href="/ui/chat/controls/session-dropdown/controller.js">
+<link rel="modulepreload" href="/ui/chat/controls/session-dropdown/list.js">
+<link rel="modulepreload" href="/ui/chat/controls/session-dropdown/row.js">
+<link rel="modulepreload" href="/ui/chat/controls/shared-chat.js">
+<link rel="modulepreload" href="/ui/chat/controls/tasks-chip.js">
+<link rel="modulepreload" href="/ui/chat/controls/usage-stats.js">
+<link rel="modulepreload" href="/ui/chat/controls/voice-player.js">
+<link rel="modulepreload" href="/ui/chat/controls/voice-reply.js">
+<link rel="modulepreload" href="/ui/chat/core/activity.js">
+<link rel="modulepreload" href="/ui/chat/core/administrator-notices.js">
+<link rel="modulepreload" href="/ui/chat/core/app-control.js">
+<link rel="modulepreload" href="/ui/chat/core/browser-link.js">
+<link rel="modulepreload" href="/ui/chat/core/bubble-gutters.js">
+<link rel="modulepreload" href="/ui/chat/core/bubble-paint.js">
+<link rel="modulepreload" href="/ui/chat/core/chat-action-panel.js">
+<link rel="modulepreload" href="/ui/chat/core/chat-zoom.js">
+<link rel="modulepreload" href="/ui/chat/core/client.js">
+<link rel="modulepreload" href="/ui/chat/core/composer-draft.js">
+<link rel="modulepreload" href="/ui/chat/core/composer-enter.js">
+<link rel="modulepreload" href="/ui/chat/core/composer-progress.js">
+<link rel="modulepreload" href="/ui/chat/core/conversation-cache.js">
+<link rel="modulepreload" href="/ui/chat/core/followup-queue.js">
+<link rel="modulepreload" href="/ui/chat/core/footer-gesture-forward.js">
+<link rel="modulepreload" href="/ui/chat/core/full-view.js">
+<link rel="modulepreload" href="/ui/chat/core/idle-pause.js">
+<link rel="modulepreload" href="/ui/chat/core/image-preview.js">
+<link rel="modulepreload" href="/ui/chat/core/message-view.js">
+<link rel="modulepreload" href="/ui/chat/core/panel.js">
+<link rel="modulepreload" href="/ui/chat/core/presentation.js">
+<link rel="modulepreload" href="/ui/chat/core/recovery-details.js">
+<link rel="modulepreload" href="/ui/chat/core/registration.js">
+<link rel="modulepreload" href="/ui/chat/core/reply-panel.js">
+<link rel="modulepreload" href="/ui/chat/core/session-start.js">
+<link rel="modulepreload" href="/ui/chat/core/sign-in-panel.js">
+<link rel="modulepreload" href="/ui/chat/core/transcript-anchor.js">
+<link rel="modulepreload" href="/ui/chat/core/transcript-window.js">
+<link rel="modulepreload" href="/ui/chat/core/ui-trace.js">
+<link rel="modulepreload" href="/ui/chat/elements/activity-group/index.js">
+<link rel="modulepreload" href="/ui/chat/elements/index.js">
+<link rel="modulepreload" href="/ui/chat/elements/main-notes/index.js">
+<link rel="modulepreload" href="/ui/chat/elements/mini-transcript/index.js">
+<link rel="modulepreload" href="/ui/chat/elements/mini-transcript/rows.js">
+<link rel="modulepreload" href="/ui/chat/elements/typing-ellipsis/index.js">
+<link rel="modulepreload" href="/ui/chat/screen-awake/screen-awake.js">
+<link rel="modulepreload" href="/ui/chat/widget/native.js">
+<link rel="modulepreload" href="/ui/chat/widget/window.js">
+<link rel="modulepreload" href="/ui/components/expand-list/expand-list.js">
+<link rel="modulepreload" href="/ui/embed/authorize.js">
+<link rel="modulepreload" href="/ui/main-panel/account/available-models.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/agent-archive.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/ability-row-controls/ability-row-controls.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/administrator.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/app-defaults.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/browser-sites.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/mcp.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/overview.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/policy.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/prompts.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/rows.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/source-control.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/abilities/stale-settings.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/artifacts/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/catalog.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/config/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/create/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/chat-customization.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/closing.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/compaction.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/embed.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/main-chat.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/manager.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/member-access.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/shared-chat.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/tool-output-policy.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/identity/voice.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/members/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/model/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/js/adapter.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/js/column-config.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/js/delete-control.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/js/sessions-page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/js/storage-panel.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/pages/sessions/page.js">
+<link rel="modulepreload" href="/ui/main-panel/agents/request-access.js">
+<link rel="modulepreload" href="/ui/shared/actions/actions-list.js">
+<link rel="modulepreload" href="/ui/shared/agents-feedback/agents-feedback.js">
+<link rel="modulepreload" href="/ui/shared/app-control-feedback/app-control-feedback.js">
+<link rel="modulepreload" href="/ui/shared/config-rows/config-rows.js">
+<link rel="modulepreload" href="/ui/shared/config-rows/settings-page.js">
+<link rel="modulepreload" href="/ui/shared/controls/controls.js">
+<link rel="modulepreload" href="/ui/shared/header-feedback/header-feedback.js">
+<link rel="modulepreload" href="/ui/shared/history-back/history-back.js">
+<link rel="modulepreload" href="/ui/shared/models/clipboard.js">
+<link rel="modulepreload" href="/ui/shared/models/delete-control.js">
+<link rel="modulepreload" href="/ui/shared/models/dom-utils.js">
+<link rel="modulepreload" href="/ui/shared/models/effort-slider.js">
+<link rel="modulepreload" href="/ui/shared/models/field-tip.js">
+<link rel="modulepreload" href="/ui/shared/models/icons.js">
+<link rel="modulepreload" href="/ui/shared/models/model-add-guard.js">
+<link rel="modulepreload" href="/ui/shared/models/model-analytics.js">
+<link rel="modulepreload" href="/ui/shared/models/model-table.js">
+<link rel="modulepreload" href="/ui/shared/models/ordering.js">
+<link rel="modulepreload" href="/ui/shared/models/v3-adapter.js">
+<link rel="modulepreload" href="/ui/shared/page-control-feedback/page-control-feedback.js">
+<link rel="modulepreload" href="/ui/shared/page-directory/page-directory.js">
+<link rel="modulepreload" href="/ui/shared/page-tabs/page-tabs.js">
+<link rel="modulepreload" href="/ui/shared/remaining-control-feedback/remaining-control-feedback.js">
+<link rel="modulepreload" href="/ui/shared/rich-text-editor/rich-text-editor.js">
+<link rel="modulepreload" href="/ui/shared/rubber-band/rubber-band.js">
+<link rel="modulepreload" href="/ui/shared/subpage-list/subpage-list.js">
+<link rel="modulepreload" href="/ui/shared/vibrate/vibrate.js">
+<link rel="modulepreload" href="/ui/shell/ability-drift/ability-drift.js">
+<link rel="modulepreload" href="/ui/shell/background-issues/background-issues.js">
+<link rel="modulepreload" href="/ui/shell/header-carousel/header-carousel.js">
+<script src="/ui/shared/scrollbars/scrollbars.js" defer></script>
+<link rel="stylesheet" href="/ui/boot/boot.css">
+<link rel="stylesheet" href="/ui/private-access/private-access-page/private-access-page.css">
+</head>
+<body class="is-booting">
+<div id="boot-curtain" role="status" aria-label="Loading"><canvas class="boot-grid" aria-hidden="true"></canvas></div>
+<div id="cursor-glow" aria-hidden="true"></div>
+<script src="/ui/boot/background/_engine/registry.js"></script>
+<link rel="stylesheet" href="/ui/boot/background/bullet-grid/bullet-grid.css" data-bg="bullet-grid">
+<script src="/ui/boot/background/bullet-grid/bullet-grid.js"></script>
+<script src="/ui/boot/cursor-effects.js"></script>
+<script src="/ui/boot/boot.js"></script>
+<script src="/ui/boot/viewport.js"></script>
+<script src="/ui/boot/zoom.js"></script>
+<div id="ptr-indicator" hidden aria-live="polite" aria-label="Pull to refresh">
+  <svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true">
+    <path d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5" fill="none" stroke="var(--fg-faint, #4a516e)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.06"/>
+    <path id="ptr-blue" d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5" fill="none" stroke="#46d4ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="98" stroke-dashoffset="98"/>
+    <path id="ptr-red" d="M24,7 A17,17 0 1,1 10.3,15.3 L15.5,10.5" fill="none" stroke="#ff5f56" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="98" stroke-dashoffset="98" style="display:none"/>
+  </svg>
+  <span class="ptr-label-hint" id="ptr-hint"></span>
+</div>
+<div id="notice" role="status" aria-live="polite"></div>
+<div id="app-restricted-overlay" aria-hidden="true"></div>
+<div id="app" hidden>
+  <div id="main-header">
+    <select id="main-tab-select" hidden aria-hidden="true"></select>
+    <button id="mobile-nav-toggle" class="mobile-nav-toggle" type="button" aria-label="Open navigation" aria-controls="mobile-nav-menu" aria-expanded="false" hidden><span aria-hidden="true">☰</span></button>
+    <button id="mobile-back-main-btn" class="mobile-back-main-btn" type="button" hidden>Agents</button>
+    <div id="main-tabs-wrap"><button type="button" id="main-tabs-chev-left" class="main-tabs-chev left" aria-label="Scroll tabs left">&#10094;</button><div id="main-tabs" role="tablist">
+      <button id="header-refresh-browser" class="header-refresh-browser" type="button" title="Clear browser data and reload (stay signed in)" aria-label="Clear browser data and reload (stay signed in)" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9c2.5 0 4.9 1 6.7 2.8L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9c-2.5 0-4.9-1-6.7-2.8L3 16"/><path d="M8 16H3v5"/></svg>
+      </button>
+      <div class="user-dropdown">
+        <button id="top-user-id" class="user-dropdown-trigger" type="button" title="Manage account" aria-label="Manage account" aria-expanded="false" aria-controls="user-dropdown-menu">
+          <span id="top-user-avatar-slot"><svg class="user-avatar-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 20c0-4 4-7 8-7s8 3 8 7"></path></svg></span>
+        </button>
+      </div>
+    </div><button type="button" id="main-tabs-chev-right" class="main-tabs-chev right" aria-label="Scroll tabs right">&#10095;</button></div>
+    <span id="status-right" class="chat-header-controls">
+      <button id="chat-float-btn" class="chat-toggle-btn" type="button" title="Float chat" aria-label="Float chat">Float</button>
+      <button id="chat-toggle-btn" class="chat-toggle-btn active" type="button" title="Toggle chat panel" aria-label="Toggle chat panel" aria-controls="chat-panel" aria-expanded="true"><span>Chat</span></button>
+    </span>
+    <aside id="mobile-nav-menu" class="mobile-nav-menu" aria-label="App navigation" hidden>
+      <nav id="mobile-nav-items" class="mobile-nav-items">
+      </nav>
+      <!-- syncLayout() moves the header's account control here in mobile mode (as V2 does). -->
+      <footer id="mobile-nav-footer" class="mobile-nav-footer">
+        <div class="theme-toggle-group" role="group" aria-label="Theme">
+          <button class="theme-option" data-theme="light" type="button" title="Light" aria-label="Light" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+          <button class="theme-option" data-theme="dark" type="button" title="Dark" aria-label="Dark" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button>
+          <button class="theme-option" data-theme="system" type="button" title="System" aria-label="System" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button>
+        </div>
+      </footer>
+    </aside>
+    <div id="user-dropdown-menu" class="user-dropdown-menu" aria-label="Account menu" hidden>
+      <div class="user-dropdown-current-row"><span class="v3-account-avatar" aria-hidden="true"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-7 8-7s8 3 8 7"/></svg></span><div class="user-dropdown-current-info"><strong id="account-name" class="user-dropdown-current-name"></strong><span id="account-username" class="user-dropdown-current-email"></span></div></div>
+      <button id="manage-account" class="user-dropdown-manage-btn" type="button"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-7 8-7s8 3 8 7"/></svg>Manage Account</button>
+      <div class="user-dropdown-divider"></div>
+      <div class="theme-toggle-section">
+        <span class="theme-toggle-label">Theme</span>
+        <div class="theme-toggle-group" role="group" aria-label="Theme">
+          <button class="theme-option" data-theme="light" type="button" title="Light" aria-label="Light" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+          <button class="theme-option" data-theme="dark" type="button" title="Dark" aria-label="Dark" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></svg></button>
+          <button class="theme-option" data-theme="system" type="button" title="System" aria-label="System" aria-pressed="false"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg></button>
+        </div>
+      </div>
+      <div class="user-dropdown-divider"></div>
+      <button id="shutoff" class="user-dropdown-action" type="button"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg><span>Shut off execution</span></button>
+      <button id="logout" class="user-dropdown-action" type="button"><svg class="lucide-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>Sign Out</button>
+    </div>
+  </div>
+  <!-- app.js builds #main-panel from the page catalog and mounts chat/core/panel.js into #chat-panel. -->
+  <div id="stage">
+    <div id="main-panel"></div>
+    <div id="chat-resize-handle" role="separator" aria-label="Resize chat panel" aria-orientation="vertical" aria-controls="main-panel chat-panel" tabindex="0"></div>
+    <div id="chat-panel" class="chat-surface"></div>
+  </div>
+</div>
+</body></html>

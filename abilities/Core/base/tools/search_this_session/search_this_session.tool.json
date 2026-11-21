@@ -1,0 +1,33 @@
+{
+  "name": "search_this_session",
+  "description": "Search this conversation's user and assistant messages by keywords.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "maximum": 20,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "core": true,
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "allow",
+    "visitor": "allow"
+  }
+}

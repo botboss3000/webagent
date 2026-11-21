@@ -1,0 +1,81 @@
+{
+  "name": "remind_me",
+  "description": "remind me through the optional Automation service. Changes use revision checks; external adapters are unavailable.",
+  "effect": "write",
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "request_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "delay_ms": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "daily_cap": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000
+      },
+      "expires_ms": {
+        "type": "integer"
+      },
+      "retry_limit": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5
+      },
+      "runner": {
+        "enum": [
+          "inline"
+        ]
+      },
+      "filter": {
+        "type": "object"
+      },
+      "main_notes_action": {
+        "type": "object",
+        "properties": {
+          "topic_id": {
+            "type": "string"
+          },
+          "entry_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic_id",
+          "entry_id"
+        ],
+        "additionalProperties": false,
+        "description": "Bind a cross-session notes action. Only the agent's central chat may coordinate it; trigger must match saved user timing. Uses one stable schedule identity."
+      }
+    },
+    "required": [
+      "request_id",
+      "prompt",
+      "delay_ms"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "remind me tomorrow at 9",
+      "set a reminder in an hour"
+    ],
+    "keywords": [
+      "remind",
+      "reminder"
+    ]
+  }
+}

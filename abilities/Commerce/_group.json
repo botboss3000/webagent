@@ -1,0 +1,9 @@
+{
+  "name": "Commerce",
+  "icon": "shopping-bag",
+  "color": "#e0af68",
+  "desc": "Storefronts and marketplaces for products, inventory, orders, carts, and checkout. Connect each provider from the agent's Abilities tab.",
+  "risk_class": "write",
+  "action_class": "external_action",
+  "order": 7
+}

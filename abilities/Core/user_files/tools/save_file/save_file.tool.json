@@ -1,0 +1,54 @@
+{
+  "name": "save_file",
+  "description": "Save a file in the current caller's private files. Use revision 0 to create; read before replacing. Supply exactly one of text or base64 data.",
+  "effect": "write",
+  "retention": {
+    "drop_input_fields": [
+      "data",
+      "text"
+    ]
+  },
+  "default_policy": {
+    "operator": "require_approval",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "data": {
+        "type": "string"
+      },
+      "expected_revision": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "media_type": {
+        "maxLength": 128,
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 255,
+        "minLength": 1,
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "save this text as a file",
+      "store a file in my files"
+    ],
+    "keywords": [
+      "save file"
+    ]
+  }
+}

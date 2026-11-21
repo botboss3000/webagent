@@ -1,0 +1,370 @@
+{
+  "version": 1,
+  "source": "V3 dashboard descriptors; authenticated system and caller-scoped APIs",
+  "cards": [
+    {
+      "id": "metric_chart",
+      "label": "Metrics over time",
+      "icon": "line-chart",
+      "w": 12,
+      "h": 5,
+      "order": 0,
+      "sections": [
+        "chart"
+      ],
+      "fields": [
+        "Cost per model",
+        "Tokens in",
+        "Tokens out",
+        "LLM calls",
+        "Errors",
+        "Active runs",
+        "DB latency (avg)",
+        "DB latency (p95)",
+        "CPU",
+        "RAM"
+      ],
+      "backend": "connected"
+    },
+    {
+      "id": "agents_panel",
+      "label": "Agents",
+      "icon": "bot",
+      "w": 4,
+      "h": 4,
+      "order": 1,
+      "sections": [
+        "agents"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "sessions_monitor",
+      "label": "Sessions & Runs",
+      "icon": "messages-square",
+      "w": 6,
+      "h": 4,
+      "order": 2,
+      "sections": [
+        "sessions"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "user_mgmt",
+      "label": "User Management",
+      "icon": "users",
+      "w": 4,
+      "h": 4,
+      "order": 3,
+      "sections": [
+        "users"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "security",
+      "label": "Security & Sign-ins",
+      "icon": "shield-check",
+      "w": 4,
+      "h": 4,
+      "order": 4,
+      "sections": [
+        "security"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "tool_usage",
+      "label": "Tool & Model Usage",
+      "icon": "wrench",
+      "w": 6,
+      "h": 4,
+      "order": 5,
+      "sections": [
+        "tool_usage"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "devices",
+      "label": "Devices",
+      "icon": "monitor-smartphone",
+      "w": 4,
+      "h": 3,
+      "order": 6,
+      "sections": [
+        "devices"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "failures",
+      "label": "Recent Failures",
+      "icon": "triangle-alert",
+      "w": 4,
+      "h": 3,
+      "order": 7,
+      "sections": [
+        "failures"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "cost",
+      "label": "Estimated Spend",
+      "icon": "wallet",
+      "w": 3,
+      "h": 2,
+      "order": 8,
+      "sections": [
+        "tokens"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "health_board",
+      "label": "System Health",
+      "icon": "heart-pulse",
+      "w": 4,
+      "h": 4,
+      "order": 8,
+      "sections": [
+        "health"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "context",
+      "label": "Context Window",
+      "icon": "brain",
+      "w": 3,
+      "h": 3,
+      "order": 9,
+      "sections": [
+        "context"
+      ],
+      "fields": [
+        "Model",
+        "Max input",
+        "Max output"
+      ],
+      "backend": "connected"
+    },
+    {
+      "id": "tokens",
+      "label": "Token Usage",
+      "icon": "coins",
+      "w": 3,
+      "h": 2,
+      "order": 9,
+      "sections": [
+        "tokens"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "token_rate",
+      "label": "Token Throughput",
+      "icon": "gauge",
+      "w": 3,
+      "h": 2,
+      "order": 10,
+      "sections": [
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "active_runs",
+      "label": "Active Agent Runs",
+      "icon": "activity",
+      "w": 3,
+      "h": 2,
+      "order": 11,
+      "sections": [
+        "active_runs",
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "db_mode",
+      "label": "Database",
+      "icon": "database",
+      "w": 3,
+      "h": 2,
+      "order": 12,
+      "sections": [
+        "db_health"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "git_changes",
+      "label": "Local changes",
+      "icon": "file-diff",
+      "w": 6,
+      "h": 2,
+      "order": 12,
+      "sections": [],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "system_resources",
+      "label": "System resources",
+      "icon": "monitor-cog",
+      "w": 6,
+      "h": 5,
+      "order": 12,
+      "sections": [
+        "system_resources"
+      ],
+      "fields": [
+        "Load average",
+        "CPU cores",
+        "RAM",
+        "Disk free",
+        "Uptime",
+        "Active chat runs",
+        "Chat concurrency",
+        "Open descriptors"
+      ],
+      "backend": "connected"
+    },
+    {
+      "id": "cpu",
+      "label": "CPU",
+      "icon": "cpu",
+      "w": 3,
+      "h": 2,
+      "order": 13,
+      "sections": [
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "icon": "memory-stick",
+      "w": 3,
+      "h": 2,
+      "order": 14,
+      "sections": [
+        "memory_mb"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "db_latency",
+      "label": "Database Latency",
+      "icon": "gauge",
+      "w": 6,
+      "h": 3,
+      "order": 15,
+      "sections": [
+        "live",
+        "db_health"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "db_latency_chart",
+      "label": "DB Latency \u2014 trend",
+      "icon": "line-chart",
+      "w": 6,
+      "h": 3,
+      "order": 16,
+      "sections": [
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "loop_split",
+      "label": "Observed loop phases",
+      "icon": "pie-chart",
+      "w": 3,
+      "h": 3,
+      "order": 17,
+      "sections": [
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "tokens_by_agent",
+      "label": "Tokens by Agent",
+      "icon": "users",
+      "w": 4,
+      "h": 3,
+      "order": 19,
+      "sections": [
+        "tokens"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "uptime",
+      "label": "Uptime",
+      "icon": "timer",
+      "w": 3,
+      "h": 2,
+      "order": 22,
+      "sections": [
+        "live"
+      ],
+      "fields": [],
+      "backend": "connected"
+    },
+    {
+      "id": "storage",
+      "label": "Storage",
+      "icon": "hard-drive",
+      "w": 3,
+      "h": 3,
+      "order": 23,
+      "sections": [
+        "storage"
+      ],
+      "fields": [
+        "Disk free"
+      ],
+      "backend": "connected"
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "icon": "network",
+      "w": 3,
+      "h": 3,
+      "order": 24,
+      "sections": [
+        "network"
+      ],
+      "fields": [],
+      "backend": "connected"
+    }
+  ]
+}

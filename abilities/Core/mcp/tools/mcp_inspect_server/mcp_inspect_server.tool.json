@@ -1,0 +1,34 @@
+{
+  "name": "mcp_inspect_server",
+  "description": "Inspect a public HTTPS MCP server before adding it; never accepts credentials",
+  "effect": "read",
+  "retention": {
+    "output": "disposable"
+  },
+  "default_policy": {
+    "operator": "allow",
+    "member": "require_approval",
+    "visitor": "require_approval"
+  },
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "maxLength": 2048
+      }
+    },
+    "required": [
+      "endpoint"
+    ],
+    "additionalProperties": false
+  },
+  "match": {
+    "examples": [
+      "inspect an MCP server before adding it"
+    ],
+    "keywords": [
+      "mcp inspect"
+    ]
+  }
+}
